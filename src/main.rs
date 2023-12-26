@@ -11,6 +11,10 @@ use bevy::{
     render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
     window::{CursorGrabMode, PrimaryWindow},
 };
+use bevy_inspector_egui::{
+    bevy_egui::{self, EguiContexts},
+    quick::WorldInspectorPlugin,
+};
 
 fn main() {
     App::new()
@@ -32,6 +36,14 @@ fn main() {
         ))
         .add_state::<AppState>()
         .add_state::<ControlsState>()
+        .add_plugins(WorldInspectorPlugin::new())
+        .add_systems(
+            PreUpdate,
+            (absorb_egui_inputs,)
+                .after(bevy_egui::systems::process_input_system)
+                .after(bevy_egui::EguiSet::ProcessInput)
+                // .after(bevy_egui::EguiSet::ProcessOutput), // .before(bevy_egui::EguiSet::BeginFrame),
+        )
         .add_plugins(WireframePlugin)
         .add_plugins(player::Player)
         .add_plugins(spectator::Spectator)
@@ -41,6 +53,24 @@ fn main() {
         // Disabling MSAA for maximum compatibility. Shader prepass with MSAA needs GPU capability MULTISAMPLED_SHADING
         .insert_resource(Msaa::Off)
         .run();
+}
+
+fn absorb_egui_inputs(mut mouse: ResMut<Input<MouseButton>>, mut contexts: EguiContexts) {
+    let ctx = contexts.ctx_mut();
+    // ctx.wants_pointer_input(); // NOTE: this egui method is broken. it returns false on the frame the thing is clicked
+    // dbg!(
+    //     ctx.wants_pointer_input(),
+    //     ctx.is_pointer_over_area(),
+    //     ctx.is_using_pointer(),
+    //     mouse.any_just_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle]),
+    //     mouse.any_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle])
+    // );
+    if ctx.is_using_pointer()
+     || ctx.is_pointer_over_area()
+         && mouse.any_just_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle])
+    {
+        mouse.reset_all();
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default, States)]
@@ -185,6 +215,8 @@ mod voxel {
 }
 
 mod player {
+    use bevy_inspector_egui::bevy_egui::{EguiContext, EguiContextQuery, EguiContexts};
+
     use super::*;
 
     #[derive(Component)]
@@ -193,10 +225,8 @@ mod player {
     pub struct Player;
     impl Plugin for Player {
         fn build(&self, app: &mut App) {
-            app.add_systems(Startup, setup).add_systems(
-                Update,
-                update.run_if(in_state(ControlsState::Player)),
-            );
+            app.add_systems(Startup, setup)
+                .add_systems(Update, update.run_if(in_state(ControlsState::Player)));
         }
     }
 
@@ -291,6 +321,8 @@ mod player {
 }
 
 mod spectator {
+    use bevy_inspector_egui::bevy_egui::EguiContexts;
+
     use super::*;
 
     #[derive(Component)]
