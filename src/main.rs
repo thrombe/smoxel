@@ -19,13 +19,18 @@ use bevy_inspector_egui::{
 fn main() {
     App::new()
         .add_plugins((
-            DefaultPlugins.set(PbrPlugin {
-                // The prepass is enabled by default on the StandardMaterial,
-                // but you can disable it if you need to.
-                //
-                // prepass_enabled: false,
-                ..default()
-            }),
+            DefaultPlugins
+                .set(PbrPlugin {
+                    // The prepass is enabled by default on the StandardMaterial,
+                    // but you can disable it if you need to.
+                    //
+                    // prepass_enabled: false,
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    watch_for_changes_override: Some(true),
+                    ..Default::default()
+                }),
             MaterialPlugin::<CustomMaterial>::default(),
             MaterialPlugin::<PrepassOutputMaterial> {
                 // This material only needs to read the prepass textures,
@@ -41,15 +46,20 @@ fn main() {
             PreUpdate,
             (absorb_egui_inputs,)
                 .after(bevy_egui::systems::process_input_system)
-                .after(bevy_egui::EguiSet::ProcessInput)
-                // .after(bevy_egui::EguiSet::ProcessOutput), // .before(bevy_egui::EguiSet::BeginFrame),
+                .after(bevy_egui::EguiSet::ProcessInput), // .after(bevy_egui::EguiSet::ProcessOutput), // .before(bevy_egui::EguiSet::BeginFrame),
         )
         .add_plugins(WireframePlugin)
         .add_plugins(player::Player)
         .add_plugins(spectator::Spectator)
         .add_plugins(voxel::VoxelPlugin)
         .add_systems(Startup, setup)
-        .add_systems(Update, (rotate, toggle_prepass_view))
+        .add_systems(
+            Update,
+            (
+                rotate,
+                // toggle_prepass_view
+            ),
+        )
         // Disabling MSAA for maximum compatibility. Shader prepass with MSAA needs GPU capability MULTISAMPLED_SHADING
         .insert_resource(Msaa::Off)
         .run();
@@ -66,8 +76,8 @@ fn absorb_egui_inputs(mut mouse: ResMut<Input<MouseButton>>, mut contexts: EguiC
     //     mouse.any_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle])
     // );
     if ctx.is_using_pointer()
-     || ctx.is_pointer_over_area()
-         && mouse.any_just_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle])
+        || ctx.is_pointer_over_area()
+            && mouse.any_just_pressed([MouseButton::Left, MouseButton::Right, MouseButton::Middle])
     {
         mouse.reset_all();
     }
@@ -92,6 +102,8 @@ mod voxel {
     use block_mesh::ndshape::ConstShape3u32;
     use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, VoxelVisibility};
     use noise::NoiseFn;
+
+    use crate::player::PlayerEntity;
 
     use super::*;
 
@@ -120,11 +132,106 @@ mod voxel {
         noise: noise::Perlin,
     }
 
+    pub struct ChunkFetchInfo<'a> {
+        pos: Vec3,
+        size: f32,
+        chunk: &'a mut DefaultChunk,
+    }
+
+    #[derive(Clone, Debug, Resource)]
+    pub enum SparseVoxelOctree {
+        Root {
+            position: Vec3,
+            size: f32, // from centre to each side
+            levels: usize,
+            voxels: [Option<Box<Self>>; 8],
+        },
+        Node {
+            voxels: [Option<Box<Self>>; 8],
+        },
+        Leaf {
+            // 1 chunk = (8*16)^3 minecraft blocks = 2M
+            // 1 minecraft block = (16 voxels)^3
+            // 1 block = 1m
+            // 1 chunk = 8m
+            chunk: DefaultChunk,
+        },
+    }
+    impl SparseVoxelOctree {
+        fn root() -> Self {
+            Self::Root {
+                position: Vec3::ZERO,
+                size: 128.0 / 2.0,
+                voxels: Default::default(),
+                levels: 4, // root level 1, chunk level 4
+            }
+        }
+
+        fn get_mut_chunk(&mut self, mut pos: Vec3) -> Option<ChunkFetchInfo> {
+            let Self::Root {
+                position,
+                size,
+                voxels,
+                levels,
+            } = self
+            else {
+                unreachable!();
+            };
+            // dbg!(pos);
+            // dbg!(&voxels);
+            pos -= *position;
+            let size = *size;
+            pos /= size;
+            if (pos.abs() - Vec3::ONE).max_element() < 0.0 {
+                let mask = if pos.z > 0.0 { 0b100 } else { 0b000 }
+                    | if pos.y > 0.0 { 0b010 } else { 0b000 }
+                    | if pos.x > 0.0 { 0b001 } else { 0b000 };
+
+                if voxels[mask].is_none() {
+                    voxels[mask] = Some(Box::new(Self::Leaf {
+                        chunk: Default::default(),
+                    }));
+                    return voxels[mask].as_mut().map(|t| match &mut *(*t) {
+                        Self::Leaf { chunk } => ChunkFetchInfo {
+                            pos: *position + (pos.signum() * size/2.0),
+                            size: size / 2.0,
+                            chunk,
+                        },
+                        _ => unreachable!(),
+                    });
+                }
+            }
+            // dbg!();
+            None
+        }
+    }
+    pub struct HitInfo {
+        origin: Vec3,
+        direction: Vec3, // assume normalized
+    }
+    #[derive(Clone, Debug)]
+    pub struct Chunk<const N: usize> {
+        voxels: Box<[u8]>,
+        materials: Box<[Vec4; 256]>,
+    }
+    const DEFAULT_CHUNK_SIDE: u32 = 8*16;
+    type DefaultChunk = Chunk<{ 8 * 16 }>;
+    impl<const N: usize> Default for Chunk<N> {
+        fn default() -> Self {
+            Self {
+                voxels: vec![0; N*N*N].into_boxed_slice(),
+                materials: Box::new([Vec4::ZERO; 256]),
+            }
+        }
+    }
+
     pub struct VoxelPlugin;
     impl Plugin for VoxelPlugin {
         fn build(&self, app: &mut App) {
             app.add_systems(Startup, setup_voxel_plugin)
-                .add_systems(OnEnter(AppState::Playing), test_spawn);
+                // .add_systems(OnEnter(AppState::Playing), test_spawn)
+                .insert_resource(SparseVoxelOctree::root())
+                .add_systems(Update, test_chunk_spawn);
         }
     }
 
@@ -133,6 +240,93 @@ mod voxel {
         let world = VoxelWorld { noise: perlin };
         commands.insert_resource(world);
         game_state.set(AppState::Playing);
+    }
+
+    fn test_chunk_spawn(
+        mut commands: Commands,
+        world: ResMut<VoxelWorld>,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut materials: ResMut<Assets<StandardMaterial>>,
+        mut svo: ResMut<SparseVoxelOctree>,
+        players: Query<(&PlayerEntity, &Transform)>,
+    ) {
+        let (_, player) = players.single();
+        let Some(chunk) = svo.get_mut_chunk(player.translation) else {
+            return;
+        };
+
+        dbg!("spawining shunk", chunk.pos, chunk.size);
+
+        let side = DEFAULT_CHUNK_SIDE as usize;
+        let mut voxels = vec![BoolVoxel(false); side * side * side];
+        for z in 1..side - 1 {
+            for y in 1..side - 1 {
+                for x in 1..side - 1 {
+                    let scale = 0.09;
+                    let xf = (x as f32 - side as f32/2.0) * scale + chunk.pos.x;
+                    let yf = (y as f32 - side as f32/2.0) * scale + chunk.pos.y;
+                    let zf = (z as f32 - side as f32/2.0) * scale + chunk.pos.z;
+                    let v = world.noise.get([xf as _, yf as _, zf as _]);
+                    // if ((x*x + y*y + z*z) as f64) < 10.0_f64.powf(3.0) {
+                    if v > 0.2 {
+                        voxels[z * side * side + y * side + x] = BoolVoxel(true);
+                        chunk.chunk.voxels[z * side * side + y * side + x] = 1;
+                    }
+                }
+            }
+        }
+        let mut buffer = GreedyQuadsBuffer::new(voxels.len());
+        type ChunkShape = ConstShape3u32<DEFAULT_CHUNK_SIDE, DEFAULT_CHUNK_SIDE, DEFAULT_CHUNK_SIDE>;
+        let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
+        greedy_quads(
+            &voxels,
+            &ChunkShape {},
+            [0; 3],
+            [DEFAULT_CHUNK_SIDE - 1; 3],
+            faces,
+            &mut buffer,
+        );
+
+        let num_indices = buffer.quads.num_quads() * 6;
+        let num_vertices = buffer.quads.num_quads() * 4;
+        let mut indices = Vec::with_capacity(num_indices);
+        let mut positions = Vec::with_capacity(num_vertices);
+        let mut normals = Vec::with_capacity(num_vertices);
+        for (group, face) in buffer.quads.groups.into_iter().zip(faces.iter()) {
+            for quad in group.into_iter() {
+                indices.extend_from_slice(&face.quad_mesh_indices(positions.len() as u32));
+                positions.extend_from_slice(&face.quad_mesh_positions(&quad, 2.0*chunk.size/DEFAULT_CHUNK_SIDE as f32));
+                normals.extend_from_slice(&face.quad_mesh_normals());
+            }
+        }
+
+        let mut render_mesh = Mesh::new(PrimitiveTopology::TriangleList);
+        render_mesh.insert_attribute(
+            Mesh::ATTRIBUTE_POSITION,
+            VertexAttributeValues::Float32x3(positions),
+        );
+        render_mesh.insert_attribute(
+            Mesh::ATTRIBUTE_NORMAL,
+            VertexAttributeValues::Float32x3(normals),
+        );
+        render_mesh.insert_attribute(
+            Mesh::ATTRIBUTE_UV_0,
+            VertexAttributeValues::Float32x2(vec![[0.0; 2]; num_vertices]),
+        );
+        render_mesh.set_indices(Some(Indices::U32(indices.clone())));
+
+        let mesh_handle = meshes.add(render_mesh);
+
+        commands.spawn((MaterialMeshBundle {
+            mesh: mesh_handle.clone(),
+            material: materials.add(StandardMaterial {
+                base_color: Color::rgb(0.8, 0.8, 0.8),
+                alpha_mode: AlphaMode::Opaque,
+                ..Default::default()
+            }),
+            transform: Transform::from_xyz(chunk.pos.x - chunk.size, chunk.pos.y - chunk.size, chunk.pos.z - chunk.size),
+            ..Default::default()
+        },));
     }
 
     fn test_spawn(
@@ -523,6 +717,7 @@ fn setup(
                 color: Color::WHITE,
                 color_texture: None,
                 alpha_mode: AlphaMode::Opaque,
+                frag: asset_server.load("shaders/custom_material.wgsl"),
             }),
             transform: Transform::from_xyz(-1.0, 0.5, 0.0),
             ..default()
@@ -571,21 +766,21 @@ fn setup(
         ..default()
     };
 
-    commands.spawn(
-        TextBundle::from_sections(vec![
-            TextSection::new("Prepass Output: transparent\n", style.clone()),
-            TextSection::new("\n\n", style.clone()),
-            TextSection::new("Controls\n", style.clone()),
-            TextSection::new("---------------\n", style.clone()),
-            TextSection::new("Space - Change output\n", style),
-        ])
-        .with_style(Style {
-            position_type: PositionType::Absolute,
-            top: Val::Px(10.0),
-            left: Val::Px(10.0),
-            ..default()
-        }),
-    );
+    // commands.spawn(
+    //     TextBundle::from_sections(vec![
+    //         TextSection::new("Prepass Output: transparent\n", style.clone()),
+    //         TextSection::new("\n\n", style.clone()),
+    //         TextSection::new("Controls\n", style.clone()),
+    //         TextSection::new("---------------\n", style.clone()),
+    //         TextSection::new("Space - Change output\n", style),
+    //     ])
+    //     .with_style(Style {
+    //         position_type: PositionType::Absolute,
+    //         top: Val::Px(10.0),
+    //         left: Val::Px(10.0),
+    //         ..default()
+    //     }),
+    // );
 }
 
 // This is the struct that will be passed to your shader
@@ -597,6 +792,7 @@ pub struct CustomMaterial {
     #[sampler(2)]
     color_texture: Option<Handle<Image>>,
     alpha_mode: AlphaMode,
+    frag: Handle<Shader>,
 }
 
 /// Not shown in this example, but if you need to specialize your material, the specialize
@@ -654,34 +850,34 @@ impl Material for PrepassOutputMaterial {
     }
 }
 
-/// Every time you press space, it will cycle between transparent, depth and normals view
-fn toggle_prepass_view(
-    mut prepass_view: Local<u32>,
-    keycode: Res<Input<KeyCode>>,
-    material_handle: Query<&Handle<PrepassOutputMaterial>>,
-    mut materials: ResMut<Assets<PrepassOutputMaterial>>,
-    mut text: Query<&mut Text>,
-) {
-    if keycode.just_pressed(KeyCode::Space) {
-        *prepass_view = (*prepass_view + 1) % 4;
+// Every time you press space, it will cycle between transparent, depth and normals view
+// fn toggle_prepass_view(
+//     mut prepass_view: Local<u32>,
+//     keycode: Res<Input<KeyCode>>,
+//     material_handle: Query<&Handle<PrepassOutputMaterial>>,
+//     mut materials: ResMut<Assets<PrepassOutputMaterial>>,
+//     mut text: Query<&mut Text>,
+// ) {
+//     if keycode.just_pressed(KeyCode::Space) {
+//         *prepass_view = (*prepass_view + 1) % 4;
 
-        let label = match *prepass_view {
-            0 => "transparent",
-            1 => "depth",
-            2 => "normals",
-            3 => "motion vectors",
-            _ => unreachable!(),
-        };
-        let mut text = text.single_mut();
-        text.sections[0].value = format!("Prepass Output: {label}\n");
-        for section in &mut text.sections {
-            section.style.color = Color::WHITE;
-        }
+//         let label = match *prepass_view {
+//             0 => "transparent",
+//             1 => "depth",
+//             2 => "normals",
+//             3 => "motion vectors",
+//             _ => unreachable!(),
+//         };
+//         let mut text = text.single_mut();
+//         text.sections[0].value = format!("Prepass Output: {label}\n");
+//         for section in &mut text.sections {
+//             section.style.color = Color::WHITE;
+//         }
 
-        let handle = material_handle.single();
-        let mat = materials.get_mut(handle).unwrap();
-        mat.settings.show_depth = (*prepass_view == 1) as u32;
-        mat.settings.show_normals = (*prepass_view == 2) as u32;
-        mat.settings.show_motion_vectors = (*prepass_view == 3) as u32;
-    }
-}
+//         let handle = material_handle.single();
+//         let mat = materials.get_mut(handle).unwrap();
+//         mat.settings.show_depth = (*prepass_view == 1) as u32;
+//         mat.settings.show_normals = (*prepass_view == 2) as u32;
+//         mat.settings.show_motion_vectors = (*prepass_view == 3) as u32;
+//     }
+// }

@@ -78,7 +78,7 @@
               targetPkgs = packages;
               runScript = ''
                 #!/usr/bin/env bash
-                nvidia-offload ./target/debug/smoxel
+                nvidia-offload ./target/debug/${manifest.name}
               '';
             })
             (pkgs.buildFHSEnv {
@@ -86,7 +86,7 @@
               targetPkgs = packages;
               runScript = ''
                 #!/usr/bin/env bash
-                nvidia-offload ./target/release/smoxel
+                nvidia-offload ./target/release/${manifest.name}
               '';
             })
             (pkgs.buildFHSEnv {
