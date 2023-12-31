@@ -3355,6 +3355,7 @@ dependencies = [
  "bevy",
  "bevy-inspector-egui",
  "block-mesh",
+ "futures-lite 2.1.0",
  "noise",
 ]
 

@@ -97,9 +97,10 @@ enum ControlsState {
 }
 
 mod voxel {
+    use bevy::ecs::system::CommandQueue;
     use bevy::render::mesh::{Indices, VertexAttributeValues};
     use bevy::render::render_resource::PrimitiveTopology;
-    use bevy::tasks::AsyncComputeTaskPool;
+    use bevy::tasks::{AsyncComputeTaskPool, Task, block_on};
     use block_mesh::ndshape::ConstShape3u32;
     use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, VoxelVisibility};
     use noise::NoiseFn;
@@ -136,7 +137,7 @@ mod voxel {
     pub struct ChunkFetchInfo<'a> {
         pos: Vec3,
         size: f32,
-        chunk: &'a mut DefaultChunk,
+        chunk_entity: &'a mut Entity,
     }
 
     #[derive(Clone, Debug, Resource)]
@@ -155,7 +156,8 @@ mod voxel {
             // 1 minecraft block = (16 voxels)^3
             // 1 block = 1m
             // 1 chunk = 8m
-            chunk: DefaultChunk,
+            entity: Entity,
+            // chunk: DefaultChunk,
         },
     }
     impl SparseVoxelOctree {
@@ -190,13 +192,15 @@ mod voxel {
 
                 if voxels[mask].is_none() {
                     voxels[mask] = Some(Box::new(Self::Leaf {
-                        chunk: Default::default(),
+                        // chunk: Default::default(),
+                        entity: Entity::PLACEHOLDER,
                     }));
                     return voxels[mask].as_mut().map(|t| match &mut *(*t) {
-                        Self::Leaf { chunk } => ChunkFetchInfo {
+                        Self::Leaf { entity } => ChunkFetchInfo {
                             pos: *position + (pos.signum() * size/2.0),
                             size: size / 2.0,
-                            chunk,
+                            // chunk,
+                            chunk_entity: entity,
                         },
                         _ => unreachable!(),
                     });
@@ -210,7 +214,7 @@ mod voxel {
         origin: Vec3,
         direction: Vec3, // assume normalized
     }
-    #[derive(Clone, Debug)]
+    #[derive(Component, Clone, Debug)]
     pub struct Chunk<const N: usize> {
         voxels: Box<[u8]>,
         materials: Box<[Vec4; 256]>,
@@ -227,13 +231,18 @@ mod voxel {
         }
     }
 
+    #[derive(Component)]
+    pub struct ChunkSpawnTask {
+        task: Task<((DefaultChunk, Entity, Vec3, f32), Mesh)>,
+    }
+
     pub struct VoxelPlugin;
     impl Plugin for VoxelPlugin {
         fn build(&self, app: &mut App) {
             app.add_systems(Startup, setup_voxel_plugin)
                 // .add_systems(OnEnter(AppState::Playing), test_spawn)
                 .insert_resource(SparseVoxelOctree::root())
-                .add_systems(Update, test_chunk_spawn);
+                .add_systems(Update, (spawn_chunk_tasks, resolve_chunk_threads));
         }
     }
 
@@ -256,92 +265,116 @@ mod voxel {
         );
     }
 
-    fn test_chunk_spawn(
+    fn spawn_chunk_tasks(
         mut commands: Commands,
-        world: ResMut<VoxelWorld>,
-        mut meshes: ResMut<Assets<Mesh>>,
-        mut materials: ResMut<Assets<StandardMaterial>>,
+        world: Res<VoxelWorld>,
         mut svo: ResMut<SparseVoxelOctree>,
         players: Query<(&PlayerEntity, &Transform)>,
     ) {
+        let threadpool = AsyncComputeTaskPool::get();
+
         let (_, player) = players.single();
         let Some(chunk) = svo.get_mut_chunk(player.translation) else {
             return;
         };
-
+        *chunk.chunk_entity = commands.spawn_empty().id();
         dbg!("spawining shunk", chunk.pos, chunk.size);
 
-        let side = DEFAULT_CHUNK_SIDE as usize;
-        let pside = PADDED_DEFAULT_CHUNK_SIDE as usize;
-        let mut voxels = vec![BoolVoxel(false); pside * pside * pside];
-        let scale = 0.09;
-        for z in 0..side {
-            for x in 0..side {
-                let xf = ((x as f32 - side as f32/2.0) / side as f32)*chunk.size*2.0 + chunk.pos.x;
-                let zf = ((z as f32 - side as f32/2.0) / side as f32)*chunk.size*2.0 + chunk.pos.z;
-                let v = world.noise.get([xf as f64 * scale, zf as f64 * scale]);
+        let size = chunk.size;
+        let pos = chunk.pos;
+        let perlin = world.noise;
+        let chunk_entity = *chunk.chunk_entity;
+        let task = threadpool.spawn(async move {
+            let side = DEFAULT_CHUNK_SIDE as usize;
+            let pside = PADDED_DEFAULT_CHUNK_SIDE as usize;
+            let mut chunk = DefaultChunk::default();
+            let mut voxels = vec![BoolVoxel(false); pside * pside * pside];
+            let scale = 0.09;
+            for z in 0..side {
+                for x in 0..side {
+                    let xf = ((x as f32 - side as f32/2.0) / side as f32)*size*2.0 + pos.x;
+                    let zf = ((z as f32 - side as f32/2.0) / side as f32)*size*2.0 + pos.z;
+                    let v = perlin.get([xf as f64 * scale, zf as f64 * scale]);
 
-                for y in 0..side {
-                    let yf = ((y as f32 - side as f32/2.0) / side as f32)*chunk.size*2.0 + chunk.pos.y;
-                    if (yf as f64 + 20.0) < v * 10.0 {
-                        voxels[(z+1) * pside * pside + (y+1) * pside + (x+1)] = BoolVoxel(true);
-                        chunk.chunk.voxels[z * side * side + y * side + x] = 1;
+                    for y in 0..side {
+                        let yf = ((y as f32 - side as f32/2.0) / side as f32)*size*2.0 + pos.y;
+                        if (yf as f64 + 20.0) < v * 10.0 {
+                            voxels[(z+1) * pside * pside + (y+1) * pside + (x+1)] = BoolVoxel(true);
+                            chunk.voxels[z * side * side + y * side + x] = 1;
+                        }
                     }
                 }
             }
-        }
-        let mut buffer = GreedyQuadsBuffer::new(voxels.len());
-        type ChunkShape = ConstShape3u32<PADDED_DEFAULT_CHUNK_SIDE, PADDED_DEFAULT_CHUNK_SIDE, PADDED_DEFAULT_CHUNK_SIDE>;
-        let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
-        greedy_quads(
-            &voxels,
-            &ChunkShape {},
-            [0; 3],
-            [DEFAULT_CHUNK_SIDE + 1; 3],
-            faces,
-            &mut buffer,
-        );
+            let mut buffer = GreedyQuadsBuffer::new(voxels.len());
+            type ChunkShape = ConstShape3u32<PADDED_DEFAULT_CHUNK_SIDE, PADDED_DEFAULT_CHUNK_SIDE, PADDED_DEFAULT_CHUNK_SIDE>;
+            let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
+            greedy_quads(
+                &voxels,
+                &ChunkShape {},
+                [0; 3],
+                [DEFAULT_CHUNK_SIDE + 1; 3],
+                faces,
+                &mut buffer,
+            );
 
-        let num_indices = buffer.quads.num_quads() * 6;
-        let num_vertices = buffer.quads.num_quads() * 4;
-        let mut indices = Vec::with_capacity(num_indices);
-        let mut positions = Vec::with_capacity(num_vertices);
-        let mut normals = Vec::with_capacity(num_vertices);
-        for (group, face) in buffer.quads.groups.into_iter().zip(faces.iter()) {
-            for quad in group.into_iter() {
-                indices.extend_from_slice(&face.quad_mesh_indices(positions.len() as u32));
-                positions.extend_from_slice(&face.quad_mesh_positions(&quad, 2.0*chunk.size/DEFAULT_CHUNK_SIDE as f32));
-                normals.extend_from_slice(&face.quad_mesh_normals());
+            let num_indices = buffer.quads.num_quads() * 6;
+            let num_vertices = buffer.quads.num_quads() * 4;
+            let mut indices = Vec::with_capacity(num_indices);
+            let mut positions = Vec::with_capacity(num_vertices);
+            let mut normals = Vec::with_capacity(num_vertices);
+            for (group, face) in buffer.quads.groups.into_iter().zip(faces.iter()) {
+                for quad in group.into_iter() {
+                    indices.extend_from_slice(&face.quad_mesh_indices(positions.len() as u32));
+                    positions.extend_from_slice(&face.quad_mesh_positions(&quad, 2.0*size/DEFAULT_CHUNK_SIDE as f32));
+                    normals.extend_from_slice(&face.quad_mesh_normals());
+                }
+            }
+
+            let mut render_mesh = Mesh::new(PrimitiveTopology::TriangleList);
+            render_mesh.insert_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                VertexAttributeValues::Float32x3(positions),
+            );
+            render_mesh.insert_attribute(
+                Mesh::ATTRIBUTE_NORMAL,
+                VertexAttributeValues::Float32x3(normals),
+            );
+            render_mesh.insert_attribute(
+                Mesh::ATTRIBUTE_UV_0,
+                VertexAttributeValues::Float32x2(vec![[0.0; 2]; num_vertices]),
+            );
+            render_mesh.set_indices(Some(Indices::U32(indices.clone())));
+
+            ((chunk, chunk_entity, pos, size), render_mesh)
+        });
+
+        commands.entity(*chunk.chunk_entity).insert(ChunkSpawnTask {task});
+    }
+
+    fn resolve_chunk_threads(
+        mut commands: Commands,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut materials: ResMut<Assets<StandardMaterial>>,
+        mut tasks: Query<(Entity, &mut ChunkSpawnTask)>,
+    ) {
+        for (task_entity, mut task) in tasks.iter_mut() {
+            // tasks can be cancelled. so it returns an Option
+            if let Some(((chunk, _, pos, size), mesh)) = block_on(futures_lite::future::poll_once(&mut task.task)) {
+                let mesh_handle = meshes.add(mesh);
+
+                commands.entity(task_entity).insert((MaterialMeshBundle {
+                    mesh: mesh_handle.clone(),
+                    material: materials.add(StandardMaterial {
+                        base_color: Color::rgb(0.8, 0.8, 0.8),
+                        alpha_mode: AlphaMode::Opaque,
+                        ..Default::default()
+                    }),
+                    transform: Transform::from_xyz(pos.x - size, pos.y - size, pos.z - size),
+                    ..Default::default()
+                }, chunk))
+                .remove::<ChunkSpawnTask>();
             }
         }
-
-        let mut render_mesh = Mesh::new(PrimitiveTopology::TriangleList);
-        render_mesh.insert_attribute(
-            Mesh::ATTRIBUTE_POSITION,
-            VertexAttributeValues::Float32x3(positions),
-        );
-        render_mesh.insert_attribute(
-            Mesh::ATTRIBUTE_NORMAL,
-            VertexAttributeValues::Float32x3(normals),
-        );
-        render_mesh.insert_attribute(
-            Mesh::ATTRIBUTE_UV_0,
-            VertexAttributeValues::Float32x2(vec![[0.0; 2]; num_vertices]),
-        );
-        render_mesh.set_indices(Some(Indices::U32(indices.clone())));
-
-        let mesh_handle = meshes.add(render_mesh);
-
-        commands.spawn((MaterialMeshBundle {
-            mesh: mesh_handle.clone(),
-            material: materials.add(StandardMaterial {
-                base_color: Color::rgb(0.8, 0.8, 0.8),
-                alpha_mode: AlphaMode::Opaque,
-                ..Default::default()
-            }),
-            transform: Transform::from_xyz(chunk.pos.x - chunk.size, chunk.pos.y - chunk.size, chunk.pos.z - chunk.size),
-            ..Default::default()
-        },));
     }
 
     fn test_spawn(
