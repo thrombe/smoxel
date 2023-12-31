@@ -99,6 +99,7 @@ enum ControlsState {
 mod voxel {
     use bevy::render::mesh::{Indices, VertexAttributeValues};
     use bevy::render::render_resource::PrimitiveTopology;
+    use bevy::tasks::AsyncComputeTaskPool;
     use block_mesh::ndshape::ConstShape3u32;
     use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, VoxelVisibility};
     use noise::NoiseFn;
@@ -215,6 +216,7 @@ mod voxel {
         materials: Box<[Vec4; 256]>,
     }
     const DEFAULT_CHUNK_SIDE: u32 = 8*16;
+    const PADDED_DEFAULT_CHUNK_SIDE: u32 = 8*16 + 2;
     type DefaultChunk = Chunk<{ 8 * 16 }>;
     impl<const N: usize> Default for Chunk<N> {
         fn default() -> Self {
@@ -240,6 +242,18 @@ mod voxel {
         let world = VoxelWorld { noise: perlin };
         commands.insert_resource(world);
         game_state.set(AppState::Playing);
+
+        commands.spawn(
+            DirectionalLightBundle {
+                directional_light: DirectionalLight {
+                    illuminance: 3000.0,
+                    shadows_enabled: true,
+                    ..Default::default()
+                },
+                transform: Transform::from_xyz(1.0, 1.0, 1.0).with_rotation(Quat::from_axis_angle(Vec3::X, 3.5)),
+                ..Default::default()
+            }
+        );
     }
 
     fn test_chunk_spawn(
@@ -258,31 +272,32 @@ mod voxel {
         dbg!("spawining shunk", chunk.pos, chunk.size);
 
         let side = DEFAULT_CHUNK_SIDE as usize;
-        let mut voxels = vec![BoolVoxel(false); side * side * side];
-        for z in 1..side - 1 {
-            for y in 1..side - 1 {
-                for x in 1..side - 1 {
-                    let scale = 0.09;
-                    let xf = (x as f32 - side as f32/2.0) * scale + chunk.pos.x;
-                    let yf = (y as f32 - side as f32/2.0) * scale + chunk.pos.y;
-                    let zf = (z as f32 - side as f32/2.0) * scale + chunk.pos.z;
-                    let v = world.noise.get([xf as _, yf as _, zf as _]);
-                    // if ((x*x + y*y + z*z) as f64) < 10.0_f64.powf(3.0) {
-                    if v > 0.2 {
-                        voxels[z * side * side + y * side + x] = BoolVoxel(true);
+        let pside = PADDED_DEFAULT_CHUNK_SIDE as usize;
+        let mut voxels = vec![BoolVoxel(false); pside * pside * pside];
+        let scale = 0.09;
+        for z in 0..side {
+            for x in 0..side {
+                let xf = ((x as f32 - side as f32/2.0) / side as f32)*chunk.size*2.0 + chunk.pos.x;
+                let zf = ((z as f32 - side as f32/2.0) / side as f32)*chunk.size*2.0 + chunk.pos.z;
+                let v = world.noise.get([xf as f64 * scale, zf as f64 * scale]);
+
+                for y in 0..side {
+                    let yf = ((y as f32 - side as f32/2.0) / side as f32)*chunk.size*2.0 + chunk.pos.y;
+                    if (yf as f64 + 20.0) < v * 10.0 {
+                        voxels[(z+1) * pside * pside + (y+1) * pside + (x+1)] = BoolVoxel(true);
                         chunk.chunk.voxels[z * side * side + y * side + x] = 1;
                     }
                 }
             }
         }
         let mut buffer = GreedyQuadsBuffer::new(voxels.len());
-        type ChunkShape = ConstShape3u32<DEFAULT_CHUNK_SIDE, DEFAULT_CHUNK_SIDE, DEFAULT_CHUNK_SIDE>;
+        type ChunkShape = ConstShape3u32<PADDED_DEFAULT_CHUNK_SIDE, PADDED_DEFAULT_CHUNK_SIDE, PADDED_DEFAULT_CHUNK_SIDE>;
         let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
         greedy_quads(
             &voxels,
             &ChunkShape {},
             [0; 3],
-            [DEFAULT_CHUNK_SIDE - 1; 3],
+            [DEFAULT_CHUNK_SIDE + 1; 3],
             faces,
             &mut buffer,
         );
