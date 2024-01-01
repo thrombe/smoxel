@@ -1,29 +1,23 @@
 #import bevy_pbr::forward_io::VertexOutput
 
-struct CustomMaterial {
-    color: vec4<f32>,
-};
-
 @group(1) @binding(0) var<uniform> side: u32;
-@group(1) @binding(1) var voxels: texture_3d<u32>; // 4 voxels per u32 TODO: little endian or big endian ? :/
-@group(1) @binding(2) var materials: texture_1d<f32>; // idk how these textures work :(
-@group(1) @binding(3) var<uniform> pos: vec3<f32>;
-@group(1) @binding(4) var<uniform> resolution: vec2<f32>;
 @group(1) @binding(5) var<uniform> _chunk_pos: vec3<f32>;
 @group(1) @binding(6) var<uniform> chunk_size: f32;
+
+// 4 voxels per u32 TODO: little endian or big endian ? :/ (does it even matter?)
+@group(1) @binding(1) var voxels: texture_3d<u32>;
+@group(1) @binding(2) var materials: texture_1d<f32>; // idk how these textures work :(
+
+@group(1) @binding(3) var<uniform> pos: vec3<f32>;
+@group(1) @binding(4) var<uniform> resolution: vec2<f32>;
 
 // returns voxel material in the rightmost byte
 fn get_voxel(pos: vec3<f32>) -> u32 {
     var coords = vec3<u32>(pos);
-    // coords.z = 127u;
-    // if (2.0 > 0.0) {
-    //     return (coords.y + coords.x) % 2u;
-    // }
     let xyzw = coords.x % 4u;
     coords.x /= 4u;
-    // coords = vec3<u32>(0u);
+    // loading textures automatically break the u32 into a vec4<u32> 1 byte each channel (~~ vec4<u8>)
     var voxel = textureLoad(voxels, coords, 0);
-    // voxel = vec4<u32>(1u, 0u, 1u, 0u);
 
     var ans: u32;
     switch (xyzw) {
@@ -43,9 +37,6 @@ fn get_voxel(pos: vec3<f32>) -> u32 {
             discard;
         }
     }
-
-    // ans = ans >> (xyzw & 3u)*8u;
-    // ans = ans & 1u;
     return ans;
 }
 
@@ -71,14 +62,6 @@ fn fragment(
     o /= voxel_size;
     // nudge nudge for edge conditions
     o -= 0.00001;
-
-    // if (2.0 > 0.0) {
-    //     if (mesh.position.x > resolution.y) {
-    //         // return vec4<f32>(max(0.0, resolution.x - 984.0 + 0.5));
-    //         return vec4<f32>(0.0);
-    //     }
-    //     return vec4<f32>(vec3<f32>(f32(get_voxel(vec3<f32>(mesh.position.xy/resolution.yy * f32(side), 0.0), voxel_size))), 1.0);
-    // }
 
     var march = vec3<f32>(floor(o));
     var dt = abs(1.0 / ray_dir);
@@ -114,7 +97,6 @@ fn fragment(
         discard;
     }
 
-    // return vec4<f32>(mesh.position.xy/resolution.xy, 0.0, 1.0);
     var color = vec3<f32>(1.0);
     var alpha = 1.0;
     color = 0.7*vec3<f32>(1.0 - max(max(t.x, t.y), t.z)/f32(2u * side));
