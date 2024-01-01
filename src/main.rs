@@ -862,17 +862,19 @@ mod spectator {
 
         let (mut transform, _) = spectator.single_mut();
         if wind.cursor.grab_mode != CursorGrabMode::Locked {
+            let pos = Vec2::new(
+                wind.resolution.width() / 2.0,
+                wind.resolution.height() / 2.0,
+            );
             if mouse_keys.just_pressed(MouseButton::Left) {
                 wind.cursor.visible = false;
                 wind.cursor.grab_mode = CursorGrabMode::Confined;
+                wind.set_cursor_position(Some(pos));
+                mouse_events.clear();
             } else if mouse_keys.just_released(MouseButton::Left) {
                 wind.cursor.visible = true;
                 wind.cursor.grab_mode = CursorGrabMode::None;
             } else if mouse_keys.pressed(MouseButton::Left) {
-                let pos = Vec2::new(
-                    wind.resolution.width() / 2.0,
-                    wind.resolution.height() / 2.0,
-                );
                 wind.set_cursor_position(Some(pos));
             } else {
                 return;
