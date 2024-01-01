@@ -589,8 +589,8 @@ mod voxel {
     ) {
         let (_, player) = players.single();
         let window = windows.single();
-        let width = window.resolution.width() as _;
-        let height = window.resolution.height() as _;
+        let width = window.resolution.physical_width() as _;
+        let height = window.resolution.physical_height() as _;
         for material in chunk_materials.iter_mut() {
             material.1.player_position = player.translation;
             material.1.resolution = Vec2::new(width, height);
