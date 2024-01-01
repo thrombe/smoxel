@@ -725,6 +725,12 @@ mod player {
                     CursorGrabMode::Locked
                 }
             };
+            let pos = Vec2::new(
+                wind.resolution.width() / 2.0,
+                wind.resolution.height() / 2.0,
+            );
+            wind.set_cursor_position(Some(pos));
+            mouse_events.clear();
         }
 
         let (mut transform, _) = player.single_mut();
@@ -802,7 +808,7 @@ mod spectator {
     }
 
     fn switch_mode(
-        keys: Res<Input<KeyCode>>,
+        mut keys: ResMut<Input<KeyCode>>,
         mut spectator: Query<(&mut Camera, &mut SpectatorEntity)>,
         curr_state: Res<State<ControlsState>>,
         mut state: ResMut<NextState<ControlsState>>,
@@ -820,6 +826,8 @@ mod spectator {
             state.set(ControlsState::Spectator);
             camera.is_active = true;
         }
+
+        keys.press(KeyCode::Escape);
     }
 
     fn setup(mut commands: Commands, mut _meshes: ResMut<Assets<Mesh>>) {
@@ -858,6 +866,12 @@ mod spectator {
                     CursorGrabMode::Locked
                 }
             };
+            let pos = Vec2::new(
+                wind.resolution.width() / 2.0,
+                wind.resolution.height() / 2.0,
+            );
+            wind.set_cursor_position(Some(pos));
+            mouse_events.clear();
         }
 
         let (mut transform, _) = spectator.single_mut();
