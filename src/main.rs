@@ -268,12 +268,13 @@ mod voxel {
         ) -> Self {
             assert_eq!(N % 4, 0, "N should be a multiple of 4");
             let side = N;
+            let pside = N+2;
             let mut new_voxels = vec![0; side.pow(3)];
-            for z in 1..side {
-                for y in 1..side {
-                    for x in 1..side {
-                        new_voxels[side.pow(2) * (z - 1) + side * (y - 1) + (x - 1)] =
-                            voxels[side.pow(2) * z + side * y + x].0;
+            for z in 0..side {
+                for y in 0..side {
+                    for x in 0..side {
+                        new_voxels[side.pow(2) * z + side * y + x] =
+                            voxels[pside.pow(2) * (z + 1) + pside * (y + 1) + (x + 1)].0;
                     }
                 }
             }
