@@ -99,6 +99,6 @@ fn fragment(
 
     var color = vec3<f32>(1.0);
     var alpha = 1.0;
-    color = 0.7*vec3<f32>(1.0 - max(max(t.x, t.y), t.z)/f32(2u * side));
+    color = vec3<f32>(max(max(t.x, t.y), t.z)/f32(2u * side));
     return vec4<f32>(color, alpha);
 }

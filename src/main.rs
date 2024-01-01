@@ -334,7 +334,7 @@ mod voxel {
         }
 
         fn alpha_mode(&self) -> AlphaMode {
-            AlphaMode::Blend
+            AlphaMode::Opaque
         }
 
         // fn deferred_fragment_shader() -> ShaderRef {
