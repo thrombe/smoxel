@@ -316,6 +316,10 @@ mod voxel {
         voxels: Handle<Image>,
         #[texture(2, dimension="1d", sample_type="float", filterable=false)]
         materials: Handle<Image>,
+        #[uniform(3)]
+        player_position: Vec3,
+        #[uniform(4)]
+        resolution: Vec2,
     }
 
     impl Material for ChunkMaterial {
@@ -344,7 +348,7 @@ mod voxel {
                 // .add_systems(OnEnter(AppState::Playing), test_spawn)
                 // .insert_resource(DefaultOpaqueRendererMethod::deferred())
                 .insert_resource(SparseVoxelOctree::root())
-                .add_systems(Update, (spawn_chunk_tasks, resolve_chunk_tasks));
+                .add_systems(Update, (spawn_chunk_tasks, resolve_chunk_tasks, update_position));
         }
     }
 
@@ -493,11 +497,29 @@ mod voxel {
                 block_on(futures_lite::future::poll_once(&mut task.task))
             {
                 let mesh_handle = meshes.add(mesh);
+                let mut material_buffer = vec![Default::default(); 256];
+                material_buffer[1] = Vec4::new(0.8, 0.8, 0.8, 1.0);
                 let chunk =
-                    DefaultChunk::from_u8voxels(&mut images, voxels, vec![Default::default(); 256]);
+                    DefaultChunk::from_u8voxels(&mut images, voxels, material_buffer);
 
+                let bboffset = size * (DEFAULT_CHUNK_SIDE as f32 + 2.0) / (DEFAULT_CHUNK_SIDE as f32);
                 commands
                     .entity(task_entity)
+                    .with_children(|parent| {
+                        parent.spawn(MaterialMeshBundle {
+                            mesh: meshes.add(Mesh::from(shape::Cube { size: size*2.0 })),
+                            material: chunk_materials.add(ChunkMaterial {
+                                side: DEFAULT_CHUNK_SIDE,
+                                voxels: chunk.voxels.clone(),
+                                materials: chunk.materials.clone(),
+                                player_position: Vec3::ZERO,
+                                resolution: Vec2::ZERO,
+                            }),
+                            visibility: Visibility::Visible,
+                            transform: Transform::from_xyz(bboffset, bboffset, bboffset),
+                            ..Default::default()
+                        });
+                    })
                     .insert((
                         MaterialMeshBundle {
                             mesh: mesh_handle.clone(),
@@ -510,18 +532,34 @@ mod voxel {
                                 side: DEFAULT_CHUNK_SIDE,
                                 voxels: chunk.voxels.clone(),
                                 materials: chunk.materials.clone(),
+                                player_position: Vec3::ZERO,
+                                resolution: Vec2::ZERO,
                             }),
                             transform: Transform::from_xyz(
                                 pos.x - size,
                                 pos.y - size,
                                 pos.z - size,
                             ),
+                            visibility: Visibility::Hidden,
                             ..Default::default()
                         },
                         chunk,
                     ))
                     .remove::<ChunkSpawnTask>();
             }
+        }
+    }
+
+    // TODO: use a custom pipeline and remove this from this material
+    // or just use ExtractComponentPlugin<{ pos: Vec3 }>
+    fn update_position(players: Query<(&PlayerEntity, &Transform)>, mut chunk_materials: ResMut<Assets<ChunkMaterial>>, windows: Query<&Window>) {
+        let (_, player) = players.single();
+        let window = windows.single();
+        let width = window.resolution.width() as _;
+        let height = window.resolution.height() as _;
+        for material in chunk_materials.iter_mut() {
+            material.1.player_position = player.translation;
+            material.1.resolution = Vec2::new(width, height);
         }
     }
 
@@ -712,8 +750,6 @@ mod player {
 }
 
 mod spectator {
-    use bevy_inspector_egui::bevy_egui::EguiContexts;
-
     use super::*;
 
     #[derive(Component)]
