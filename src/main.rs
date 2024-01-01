@@ -272,20 +272,21 @@ mod voxel {
             for z in 1..side {
                 for y in 1..side {
                     for x in 1..side {
-                        new_voxels[side.pow(2) * (z-1) + side * (y-1) + (x-1)] = voxels[side.pow(2) * z + side * y + x].0;
+                        new_voxels[side.pow(2) * (z - 1) + side * (y - 1) + (x - 1)] =
+                            voxels[side.pow(2) * z + side * y + x].0;
                     }
                 }
             }
             let mut new_img = Image::new(
-                    Extent3d {
-                        width: N as u32 / 4,
-                        height: N as _,
-                        depth_or_array_layers: N as _,
-                    },
-                    TextureDimension::D3,
-                    new_voxels,
-                    TextureFormat::Rgba8Uint,
-                );
+                Extent3d {
+                    width: N as u32 / 4,
+                    height: N as _,
+                    depth_or_array_layers: N as _,
+                },
+                TextureDimension::D3,
+                new_voxels,
+                TextureFormat::Rgba8Uint,
+            );
             new_img.sampler = ImageSampler::nearest();
             Self {
                 voxels: assets.add(new_img),
@@ -312,14 +313,18 @@ mod voxel {
     pub struct ChunkMaterial {
         #[uniform(0)]
         side: u32,
-        #[texture(1, sample_type="u_int", dimension="3d")]
+        #[texture(1, sample_type = "u_int", dimension = "3d")]
         voxels: Handle<Image>,
-        #[texture(2, dimension="1d", sample_type="float", filterable=false)]
+        #[texture(2, dimension = "1d", sample_type = "float", filterable = false)]
         materials: Handle<Image>,
         #[uniform(3)]
         player_position: Vec3,
         #[uniform(4)]
         resolution: Vec2,
+        #[uniform(5)]
+        chunk_position: Vec3,
+        #[uniform(6)]
+        chunk_size: f32,
     }
 
     impl Material for ChunkMaterial {
@@ -328,7 +333,7 @@ mod voxel {
         }
 
         fn alpha_mode(&self) -> AlphaMode {
-            AlphaMode::Opaque
+            AlphaMode::Blend
         }
 
         // fn deferred_fragment_shader() -> ShaderRef {
@@ -348,11 +353,27 @@ mod voxel {
                 // .add_systems(OnEnter(AppState::Playing), test_spawn)
                 // .insert_resource(DefaultOpaqueRendererMethod::deferred())
                 .insert_resource(SparseVoxelOctree::root())
-                .add_systems(Update, (spawn_chunk_tasks, resolve_chunk_tasks, update_position));
+                .add_systems(
+                    Update,
+                    (
+                        spawn_chunk_tasks,
+                        resolve_chunk_tasks,
+                        update_chunk_material,
+                        test_system,
+                    ),
+                );
         }
     }
 
-    fn setup_voxel_plugin(mut commands: Commands, mut game_state: ResMut<NextState<AppState>>, cameras: Query<Entity, With<Camera>>, mut default_opaque_renderer_method: ResMut<DefaultOpaqueRendererMethod>, asset_server: Res<AssetServer>) {
+    fn test_system() {}
+
+    fn setup_voxel_plugin(
+        mut commands: Commands,
+        mut game_state: ResMut<NextState<AppState>>,
+        cameras: Query<Entity, With<Camera>>,
+        mut default_opaque_renderer_method: ResMut<DefaultOpaqueRendererMethod>,
+        asset_server: Res<AssetServer>,
+    ) {
         let perlin = noise::Perlin::new(3243);
         let world = VoxelWorld { noise: perlin };
         commands.insert_resource(world);
@@ -496,32 +517,44 @@ mod voxel {
             if let Some(((voxels, pos, size), mesh)) =
                 block_on(futures_lite::future::poll_once(&mut task.task))
             {
+                let empty_mesh = mesh.count_vertices() == 0;
+
                 let mesh_handle = meshes.add(mesh);
                 let mut material_buffer = vec![Default::default(); 256];
                 material_buffer[1] = Vec4::new(0.8, 0.8, 0.8, 1.0);
-                let chunk =
-                    DefaultChunk::from_u8voxels(&mut images, voxels, material_buffer);
+                let chunk = DefaultChunk::from_u8voxels(&mut images, voxels, material_buffer);
 
-                let bboffset = size * (DEFAULT_CHUNK_SIDE as f32 + 2.0) / (DEFAULT_CHUNK_SIDE as f32);
+                let r = (DEFAULT_CHUNK_SIDE as f32 + 2.0) / (DEFAULT_CHUNK_SIDE as f32);
+                let bb_mesh_relative_pos = Vec3::ZERO;
+                let voxel_mesh_relative_pos = Vec3::splat(-size * r);
+                let chunk_position = pos;
                 commands
                     .entity(task_entity)
+                    .insert((GlobalTransform::default(), Transform::from_translation(pos)))
+                    .remove::<ChunkSpawnTask>();
+
+                if empty_mesh {
+                    continue;
+                }
+
+                commands.entity(task_entity)
                     .with_children(|parent| {
                         parent.spawn(MaterialMeshBundle {
-                            mesh: meshes.add(Mesh::from(shape::Cube { size: size*2.0 })),
+                            mesh: meshes.add(Mesh::from(shape::Cube { size: size * 2.0 })),
                             material: chunk_materials.add(ChunkMaterial {
                                 side: DEFAULT_CHUNK_SIDE,
                                 voxels: chunk.voxels.clone(),
                                 materials: chunk.materials.clone(),
                                 player_position: Vec3::ZERO,
                                 resolution: Vec2::ZERO,
+                                chunk_position,
+                                chunk_size: size,
                             }),
                             visibility: Visibility::Visible,
-                            transform: Transform::from_xyz(bboffset, bboffset, bboffset),
+                            transform: Transform::from_translation(bb_mesh_relative_pos),
                             ..Default::default()
                         });
-                    })
-                    .insert((
-                        MaterialMeshBundle {
+                        parent.spawn(MaterialMeshBundle {
                             mesh: mesh_handle.clone(),
                             // material: materials.add(StandardMaterial {
                             //     base_color: Color::rgb(0.8, 0.8, 0.8),
@@ -534,25 +567,26 @@ mod voxel {
                                 materials: chunk.materials.clone(),
                                 player_position: Vec3::ZERO,
                                 resolution: Vec2::ZERO,
+                                chunk_position,
+                                chunk_size: size,
                             }),
-                            transform: Transform::from_xyz(
-                                pos.x - size,
-                                pos.y - size,
-                                pos.z - size,
-                            ),
+                            transform: Transform::from_translation(voxel_mesh_relative_pos),
                             visibility: Visibility::Hidden,
                             ..Default::default()
-                        },
-                        chunk,
-                    ))
-                    .remove::<ChunkSpawnTask>();
+                        });
+                    })
+                    .insert(chunk);
             }
         }
     }
 
     // TODO: use a custom pipeline and remove this from this material
     // or just use ExtractComponentPlugin<{ pos: Vec3 }>
-    fn update_position(players: Query<(&PlayerEntity, &Transform)>, mut chunk_materials: ResMut<Assets<ChunkMaterial>>, windows: Query<&Window>) {
+    fn update_chunk_material(
+        players: Query<(&PlayerEntity, &Transform)>,
+        mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
+        windows: Query<&Window>,
+    ) {
         let (_, player) = players.single();
         let window = windows.single();
         let width = window.resolution.width() as _;
