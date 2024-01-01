@@ -9,36 +9,114 @@ struct CustomMaterial {
 @group(1) @binding(2) var materials: texture_1d<f32>; // idk how these textures work :(
 @group(1) @binding(3) var<uniform> pos: vec3<f32>;
 @group(1) @binding(4) var<uniform> resolution: vec2<f32>;
-@group(1) @binding(5) var<uniform> chunk_pos: vec3<f32>;
+@group(1) @binding(5) var<uniform> _chunk_pos: vec3<f32>;
 @group(1) @binding(6) var<uniform> chunk_size: f32;
+
+// returns voxel material in the rightmost byte
+fn get_voxel(pos: vec3<f32>) -> u32 {
+    var coords = vec3<u32>(pos);
+    // coords.z = 127u;
+    // if (2.0 > 0.0) {
+    //     return (coords.y + coords.x) % 2u;
+    // }
+    let xyzw = coords.x % 4u;
+    coords.x /= 4u;
+    // coords = vec3<u32>(0u);
+    var voxel = textureLoad(voxels, coords, 0);
+    // voxel = vec4<u32>(1u, 0u, 1u, 0u);
+
+    var ans: u32;
+    switch (xyzw) {
+        case 0u {
+            ans = voxel.x;
+        }
+        case 1u {
+            ans = voxel.y;
+        }
+        case 2u {
+            ans = voxel.z;
+        }
+        case 3u {
+            ans = voxel.w;
+        }
+        default {
+            discard;
+        }
+    }
+
+    // ans = ans >> (xyzw & 3u)*8u;
+    // ans = ans & 1u;
+    return ans;
+}
 
 @fragment
 fn fragment(
     mesh: VertexOutput,
 ) -> @location(0) vec4<f32> {
-    // let uv = mesh.position.xy/1000.0;
-    // return vec4<f32>(((uv.x * uv.x + uv.y * uv.y)*10.0)%1.0, uv.x, uv.y, 1.0);
-    // return vec4<f32>(mesh.world_position.xyz/128.0, 1.0);
-    // return vec4<f32>(pos.xyz/128.0, 1.0);
-
     let screen_uv = mesh.position.xy/resolution.xy;
     let ray_pos = mesh.world_position.xyz;
     let ray_origin = pos.xyz;
     let ray_dir = normalize(ray_pos - ray_origin);
+    let voxel_size = chunk_size * 2.0 / f32(side);
+
+    // chunk pos at it's center
+    var chunk_pos = _chunk_pos;
+    // chunk pos at the corner
+    chunk_pos -= chunk_size;
+
+    var o = ray_pos;
+    // origin wrt chunk's origin
+    o -= chunk_pos;
+    // make each voxel of size 1
+    o /= voxel_size;
+    // nudge nudge for edge conditions
+    o -= 0.00001;
+
+    // if (2.0 > 0.0) {
+    //     if (mesh.position.x > resolution.y) {
+    //         // return vec4<f32>(max(0.0, resolution.x - 984.0 + 0.5));
+    //         return vec4<f32>(0.0);
+    //     }
+    //     return vec4<f32>(vec3<f32>(f32(get_voxel(vec3<f32>(mesh.position.xy/resolution.yy * f32(side), 0.0), voxel_size))), 1.0);
+    // }
+
+    var march = vec3<f32>(floor(o));
+    var dt = abs(1.0 / ray_dir);
+    var step = vec3<f32>(sign(ray_dir));
+    var t = step * (march - o) + ((step * 0.5) + 0.5) * dt;
+    // var mask: vec3<bool>;
+    var voxel: u32;
+    for (var i=0u; i<side*2u; i = i+1u) {
+        voxel = get_voxel(march);
+        if (voxel != 0u) {
+            continue;
+        }
+
+        if (t.x < t.y) {
+            if (t.x < t.y) {
+                t.x += dt.x;
+                march.x += step.x;
+            } else {
+                t.z += dt.z;
+                march.z += step.z;
+            }
+        } else {
+            if (t.y < t.z) {
+                t.y += dt.y;
+                march.y += step.y;
+            } else {
+                t.z += dt.z;
+                march.z += step.z;
+            }
+        }
+    }
+    if (voxel == 0u) {
+        discard;
+    }
 
     // return vec4<f32>(mesh.position.xy/resolution.xy, 0.0, 1.0);
-    var color = chunk_pos;
-    color = ray_pos - chunk_pos;
-    // color = abs(color);
-    // color -= chunk_size;
-    color = color / chunk_size;
-    // color /= 2.0;
-    // color = color % 1.1;
-    // color -= chunk_size*0.9;
-    // color = normalize(color);
+    var color = vec3<f32>(1.0);
     var alpha = 1.0;
-    // alpha = length(color);
-    // alpha -= 1.0;
-    // alpha = 0.7;
+    color = 0.7*vec3<f32>(1.0 - max(max(t.x, t.y), t.z)/f32(2u * side));
     return vec4<f32>(color, alpha);
 }
