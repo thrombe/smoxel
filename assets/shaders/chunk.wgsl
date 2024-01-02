@@ -13,9 +13,7 @@
 
 // returns voxel material in the rightmost byte
 fn get_voxel(pos: vec3<f32>) -> u32 {
-    var bout = pos >= f32(side);
-    bout = bout || (pos < 0.0);
-    if (bout.x || bout.y || bout.z) {
+    if (any(pos >= f32(side) || pos < 0.0)) {
         return 0u;
     }
     
