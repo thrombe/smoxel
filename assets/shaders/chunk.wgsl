@@ -26,25 +26,7 @@ fn get_voxel(pos: vec3<f32>) -> u32 {
     // loading textures automatically break the u32 into a vec4<u32> 1 byte each channel (~~ vec4<u8>)
     var voxel = textureLoad(voxels, coords, 0);
 
-    var ans: u32;
-    switch (xyzw) {
-        case 0u {
-            ans = voxel.x;
-        }
-        case 1u {
-            ans = voxel.y;
-        }
-        case 2u {
-            ans = voxel.z;
-        }
-        case 3u {
-            ans = voxel.w;
-        }
-        default {
-            ans = 0u;
-        }
-    }
-    return ans;
+    return voxel[xyzw];
 }
 
 // https://www.shadertoy.com/view/4dX3zl
