@@ -79,41 +79,37 @@ fn fragment(
     var dt = abs(1.0 / ray_dir);
     var step = sign(ray_dir);
     // how much t untill we hit a plane along this axis
-    var t = (step * 0.5 + 0.5 - fract(o)*step) * dt;
+    var t = (step * 0.5 + 0.5 - fract(o) * step) * dt;
     // current voxel position (offset to center of the voxel)
     var march = floor(o) + 0.5;
 
     var voxel: u32 = 0u;
     var last_t = 0.0;
-    var lts: vec3<f32>;
-    for (var i=0u; i<side*2u; i = i+1u) {
+    for (var i = 0u; i < side * 3u; i += 1u) {
         voxel = get_voxel(march);
         if (voxel != 0u) {
-            continue;
+            break;
         }
-
-        lts = march;
-        lts = t;
 
         if (t.x < t.y) {
             if (t.x < t.z) {
                 t.x += dt.x;
                 march.x += step.x;
-                last_t = lts.x;
+                last_t = t.x;
             } else {
                 t.z += dt.z;
                 march.z += step.z;
-                last_t = lts.z;
+                last_t = t.z;
             }
         } else {
             if (t.y < t.z) {
                 t.y += dt.y;
                 march.y += step.y;
-                last_t = lts.y;
+                last_t = t.y;
             } else {
                 t.z += dt.z;
                 march.z += step.z;
-                last_t = lts.z;
+                last_t = t.z;
             }
         }
     }
@@ -123,6 +119,7 @@ fn fragment(
 
     var color = vec3<f32>(1.0);
     var alpha = 1.0;
-    color = vec3<f32>(last_t/f32(2u * side));
+    color = vec3<f32>(20.0/length(ray_pos + (last_t * voxel_size) * ray_dir - ray_origin));
+    // color = vec3<f32>(20.0/length(march * voxel_size + chunk_pos - ray_origin));
     return vec4<f32>(color, alpha);
 }
