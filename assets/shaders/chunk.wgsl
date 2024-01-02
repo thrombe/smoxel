@@ -79,26 +79,28 @@ fn fragment(
     // current voxel position (offset to center of the voxel)
     var march = floor(o) + 0.5;
 
-    var voxel: u32 = 0u;
-    var mask: vec3<bool>;
+    var voxel: u32;
+    var mask: vec3<f32>;
     for (var i = 0u; i < side * 3u; i += 1u) {
         voxel = get_voxel(march);
         if (voxel != 0u) {
             break;
         }
 
-        mask = t.xyz <= min(t.yzx, t.zxy);
-        t += vec3<f32>(mask) * dt;
-        march += vec3<f32>(mask) * step;
+        mask = vec3<f32>(t.xyz <= min(t.yzx, t.zxy));
+        t += mask * dt;
+        march += mask * step;
     }
     if (voxel == 0u) {
         discard;
     }
+    let masked_t = mask * t;
+    let final_t = max(masked_t.x, max(masked_t.y, masked_t.z)) * voxel_size;
+    let ray_hit_pos = ray_pos + final_t * ray_dir;
 
     var color = vec3<f32>(1.0);
     var alpha = 1.0;
-    t = vec3<f32>(mask) * t;
-    color = vec3<f32>(20.0/length(ray_pos + (max(t.x, max(t.y, t.z)) * voxel_size) * ray_dir - ray_origin));
+    color = vec3<f32>(20.0/length(ray_hit_pos - ray_origin));
     // color = vec3<f32>(20.0/length(march * voxel_size + chunk_pos - ray_origin));
     return vec4<f32>(color, alpha);
 }
