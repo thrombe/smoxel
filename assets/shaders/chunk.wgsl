@@ -59,10 +59,6 @@ fn fragment(
     let ray_dir = normalize(ray_pos - ray_origin);
     let voxel_size = chunk_size * 2.0 / f32(side);
 
-    // if (2.0 > 0.0) {
-    //     return vec4<f32>((ray_pos - _chunk_pos)/1000.0, 1.0);
-    // }
-
     // chunk pos at it's center
     var chunk_pos = _chunk_pos;
     // chunk pos at the corner
@@ -84,34 +80,16 @@ fn fragment(
     var march = floor(o) + 0.5;
 
     var voxel: u32 = 0u;
-    var last_t = 0.0;
+    var mask: vec3<bool>;
     for (var i = 0u; i < side * 3u; i += 1u) {
         voxel = get_voxel(march);
         if (voxel != 0u) {
             break;
         }
 
-        if (t.x < t.y) {
-            if (t.x < t.z) {
-                t.x += dt.x;
-                march.x += step.x;
-                last_t = t.x;
-            } else {
-                t.z += dt.z;
-                march.z += step.z;
-                last_t = t.z;
-            }
-        } else {
-            if (t.y < t.z) {
-                t.y += dt.y;
-                march.y += step.y;
-                last_t = t.y;
-            } else {
-                t.z += dt.z;
-                march.z += step.z;
-                last_t = t.z;
-            }
-        }
+        mask = t.xyz <= min(t.yzx, t.zxy);
+        t += vec3<f32>(mask) * dt;
+        march += vec3<f32>(mask) * step;
     }
     if (voxel == 0u) {
         discard;
@@ -119,7 +97,8 @@ fn fragment(
 
     var color = vec3<f32>(1.0);
     var alpha = 1.0;
-    color = vec3<f32>(20.0/length(ray_pos + (last_t * voxel_size) * ray_dir - ray_origin));
+    t = vec3<f32>(mask) * t;
+    color = vec3<f32>(20.0/length(ray_pos + (max(t.x, max(t.y, t.z)) * voxel_size) * ray_dir - ray_origin));
     // color = vec3<f32>(20.0/length(march * voxel_size + chunk_pos - ray_origin));
     return vec4<f32>(color, alpha);
 }
