@@ -17,7 +17,7 @@ use bevy_inspector_egui::{
     bevy_egui::{self, EguiContexts},
     quick::WorldInspectorPlugin,
 };
-use voxel::ChunkMaterial;
+use chunk::ChunkMaterial;
 
 fn main() {
     let mut app = App::new();
@@ -49,7 +49,7 @@ fn main() {
     .add_plugins(WireframePlugin)
     .add_plugins(player::Player)
     .add_plugins(spectator::Spectator)
-    .add_plugins(voxel::VoxelPlugin)
+    .add_plugins(chunk::VoxelPlugin)
     .add_plugins(vox::VoxLoader)
     .add_systems(Startup, setup)
     .add_systems(
@@ -106,7 +106,7 @@ enum ControlsState {
     Spectator,
 }
 
-mod voxel {
+mod chunk {
     use bevy::pbr::DefaultOpaqueRendererMethod;
     use bevy::render::mesh::{Indices, VertexAttributeValues};
     use bevy::render::render_resource::{
@@ -410,26 +410,6 @@ mod voxel {
                 .with_rotation(Quat::from_axis_angle(Vec3::X, 3.5)),
             ..Default::default()
         });
-
-        // default_opaque_renderer_method.set_to_deferred();
-        // for camera in &cameras {
-        //     commands.entity(camera).remove::<NormalPrepass>();
-        //     commands.entity(camera).insert(DepthPrepass);
-        //     commands.entity(camera).insert(MotionVectorPrepass);
-        //     commands.entity(camera).insert(DeferredPrepass);
-        //     commands.entity(camera).insert(FogSettings {
-        //         color: Color::rgba_u8(43, 44, 47, 255),
-        //         falloff: FogFalloff::Linear {
-        //             start: 1.0,
-        //             end: 8.0,
-        //         },
-        //         ..default()
-        //     });
-        //     // commands.entity(camera).insert(EnvironmentMapLight {
-        //     //     diffuse_map: asset_server.load("environment_maps/pisa_diffuse_rgb9e5_zstd.ktx2"),
-        //     //     specular_map: asset_server.load("environment_maps/pisa_specular_rgb9e5_zstd.ktx2"),
-        //     // });
-        // }
     }
 
     fn spawn_chunk_tasks(
@@ -548,7 +528,6 @@ mod voxel {
                 let r = (DEFAULT_CHUNK_SIDE as f32 + 2.0) / (DEFAULT_CHUNK_SIDE as f32);
                 let bb_mesh_relative_pos = Vec3::ZERO;
                 let voxel_mesh_relative_pos = Vec3::splat(-size * r);
-                let chunk_position = pos;
                 commands
                     .entity(task_entity)
                     .insert((GlobalTransform::default(), Transform::from_translation(pos)))
@@ -570,7 +549,7 @@ mod voxel {
                                     materials: chunk.materials.clone(),
                                     player_position: Vec3::ZERO,
                                     resolution: Vec2::ZERO,
-                                    chunk_position,
+                                    chunk_position: Vec3::ZERO,
                                     chunk_size: size,
                                 }),
                                 visibility: Visibility::Visible,
@@ -593,7 +572,7 @@ mod voxel {
                                     materials: chunk.materials.clone(),
                                     player_position: Vec3::ZERO,
                                     resolution: Vec2::ZERO,
-                                    chunk_position,
+                                    chunk_position: Vec3::ZERO,
                                     chunk_size: size,
                                 }),
                                 transform: Transform::from_translation(voxel_mesh_relative_pos),
@@ -629,84 +608,6 @@ mod voxel {
             chunk_materials.get_mut(material).unwrap().chunk_position = pos.translation();
         }
     }
-
-    fn test_spawn(
-        mut commands: Commands,
-        world: ResMut<VoxelWorld>,
-        mut meshes: ResMut<Assets<Mesh>>,
-        mut materials: ResMut<Assets<StandardMaterial>>,
-    ) {
-        const SIDEU32: u32 = 32;
-        let side = SIDEU32 as usize;
-        let mut voxels = vec![U8Voxel(0); side * side * side];
-        for z in 1..side - 1 {
-            for y in 1..side - 1 {
-                for x in 1..side - 1 {
-                    let scale = 0.09;
-                    let xf = x as f64 * scale;
-                    let yf = y as f64 * scale;
-                    let zf = z as f64 * scale;
-                    let v = world.noise.get([xf, yf, zf]);
-                    // if ((x*x + y*y + z*z) as f64) < 10.0_f64.powf(3.0) {
-                    if v > 0.2 {
-                        voxels[z * side * side + y * side + x] = U8Voxel(1);
-                    }
-                }
-            }
-        }
-        let mut buffer = GreedyQuadsBuffer::new(voxels.len());
-        type ChunkShape = ConstShape3u32<SIDEU32, SIDEU32, SIDEU32>;
-        let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
-        greedy_quads(
-            &voxels,
-            &ChunkShape {},
-            [0; 3],
-            [SIDEU32 - 1; 3],
-            faces,
-            &mut buffer,
-        );
-
-        let num_indices = buffer.quads.num_quads() * 6;
-        let num_vertices = buffer.quads.num_quads() * 4;
-        let mut indices = Vec::with_capacity(num_indices);
-        let mut positions = Vec::with_capacity(num_vertices);
-        let mut normals = Vec::with_capacity(num_vertices);
-        for (group, face) in buffer.quads.groups.into_iter().zip(faces.iter()) {
-            for quad in group.into_iter() {
-                indices.extend_from_slice(&face.quad_mesh_indices(positions.len() as u32));
-                positions.extend_from_slice(&face.quad_mesh_positions(&quad, 1.0));
-                normals.extend_from_slice(&face.quad_mesh_normals());
-            }
-        }
-
-        let mut render_mesh = Mesh::new(PrimitiveTopology::TriangleList);
-        render_mesh.insert_attribute(
-            Mesh::ATTRIBUTE_POSITION,
-            VertexAttributeValues::Float32x3(positions),
-        );
-        render_mesh.insert_attribute(
-            Mesh::ATTRIBUTE_NORMAL,
-            VertexAttributeValues::Float32x3(normals),
-        );
-        render_mesh.insert_attribute(
-            Mesh::ATTRIBUTE_UV_0,
-            VertexAttributeValues::Float32x2(vec![[0.0; 2]; num_vertices]),
-        );
-        render_mesh.set_indices(Some(Indices::U32(indices.clone())));
-
-        let mesh_handle = meshes.add(render_mesh);
-
-        commands.spawn((MaterialMeshBundle {
-            mesh: mesh_handle.clone(),
-            material: materials.add(StandardMaterial {
-                base_color: Color::rgb(0.8, 0.8, 0.8),
-                alpha_mode: AlphaMode::Opaque,
-                ..Default::default()
-            }),
-            transform: Transform::from_xyz(0.0, 0.0, 0.0),
-            ..Default::default()
-        },));
-    }
 }
 
 mod vox {
@@ -717,7 +618,7 @@ mod vox {
     };
     use dot_vox::{DotVoxData, Model, SceneNode};
 
-    use crate::voxel::{ChunkMaterial, DefaultChunk};
+    use crate::chunk::{ChunkMaterial, DefaultChunk};
 
     #[derive(Component, Clone, Copy)]
     pub struct VoxChunk;
@@ -1127,7 +1028,8 @@ mod spectator {
             camera.is_active = true;
         }
 
-        keys.press(KeyCode::Escape);
+        // dosen't fix the bug T-T
+        // keys.press(KeyCode::Escape);
     }
 
     fn setup(mut commands: Commands, mut _meshes: ResMut<Assets<Mesh>>) {
@@ -1303,7 +1205,6 @@ fn setup(
                 color: Color::WHITE,
                 color_texture: None,
                 alpha_mode: AlphaMode::Opaque,
-                frag: asset_server.load("shaders/custom_material.wgsl"),
             }),
             transform: Transform::from_xyz(-1.0, 0.5, 0.0),
             ..default()
@@ -1378,7 +1279,6 @@ pub struct CustomMaterial {
     #[sampler(2)]
     color_texture: Option<Handle<Image>>,
     alpha_mode: AlphaMode,
-    frag: Handle<Shader>,
 }
 
 /// Not shown in this example, but if you need to specialize your material, the specialize
