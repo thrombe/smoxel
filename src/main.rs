@@ -25,6 +25,16 @@ fn main() {
 
     app.add_plugins((
         DefaultPlugins
+            .set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Smoxel".into(),
+                    present_mode: bevy::window::PresentMode::Fifo,
+                    // present_mode: bevy::window::PresentMode::Immediate,
+                    // present_mode: bevy::window::PresentMode::Mailbox,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
             .set(PbrPlugin {
                 // The prepass is enabled by default on the StandardMaterial,
                 // but you can disable it if you need to.
