@@ -56,6 +56,19 @@ fn fragment(
     // make each voxel of size 1
     o /= voxel_size;
 
+    var bo = ray_pos;
+    bo -= ray_dir * 0.01;
+    bo -= chunk_pos;
+    bo /= chunk_size * 2.0;
+    var bdt = abs(1.0 / (-ray_dir));
+    var bstep = sign(-ray_dir);
+    var bt = (bstep * 0.5 + 0.5 - fract(bo) * bstep) * bdt;
+    var max_bt = min(bt.x, min(bt.y, bt.z));
+    bo += max_bt * (-ray_dir);
+    bo *= chunk_size * 2.0;
+    bo /= voxel_size;
+
+    o = select(bo, (ray_origin - chunk_pos)/voxel_size, length(bo * voxel_size + chunk_pos  - ray_pos) > length(ray_origin - ray_pos));
 
     // how much t for 1 voxel unit in this direction
     var dt = abs(1.0 / ray_dir);

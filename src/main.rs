@@ -855,6 +855,7 @@ mod vox {
 
                     commands.entity(chunk).insert(
                         Transform::from_translation(translation * voxel_size)
+                            .with_scale(Vec3::NEG_ONE)
                             .with_rotation(rotation), //.with_scale(scale),
                     );
                 }
