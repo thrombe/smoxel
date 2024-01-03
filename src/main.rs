@@ -728,6 +728,7 @@ mod vox {
 
         let mut chunks = HashMap::new();
 
+        // TODO: vox chunks can be of side 256, but this code crashes on chunk size > DEFAULT_CHUNK_SIDE
         for (i, model) in data.models.iter().enumerate().take(50) {
             let mut voxels = vec![0u8; side.pow(3)];
             for voxel in &model.voxels {
@@ -871,7 +872,7 @@ mod vox {
             Vec3::default(),
             Quat::default(),
             Vec3::ZERO,
-            size / 256.0, // 256 is the maximum cunk size (in voxels) in the vox format
+            size / 256.0, // 256 is the maximum chunk size in the vox format
         );
     }
 }
@@ -956,10 +957,20 @@ mod player {
         }
         mouse_delta *= 0.002;
 
-        // TODO: clamp y rotation to +- Vec3::Y
-        let quat = Quat::from_axis_angle(Vec3::Y, -mouse_delta.x)
-            * Quat::from_axis_angle(transform.local_x(), -mouse_delta.y);
-        transform.rotate(quat);
+        {
+            let mut rotation = transform.rotation;
+            let yrotation = Quat::from_axis_angle(Vec3::Y, -mouse_delta.x);
+            let xrotation = Quat::from_axis_angle(transform.local_x(), -mouse_delta.y);
+
+            rotation = xrotation * rotation;
+            let is_upside_down = rotation.mul_vec3(Vec3::Y).y < 0.0;
+            if is_upside_down {
+                rotation = transform.rotation;
+            }
+
+            rotation = yrotation * rotation;
+            transform.rotation = rotation;
+        }
 
         let speed = 0.2;
         let forward = transform.forward();
@@ -1098,10 +1109,20 @@ mod spectator {
         }
         mouse_delta *= 0.002;
 
-        // TODO: clamp y rotation to +- Vec3::Y
-        let quat = Quat::from_axis_angle(Vec3::Y, -mouse_delta.x)
-            * Quat::from_axis_angle(transform.local_x(), -mouse_delta.y);
-        transform.rotate(quat);
+        {
+            let mut rotation = transform.rotation;
+            let yrotation = Quat::from_axis_angle(Vec3::Y, -mouse_delta.x);
+            let xrotation = Quat::from_axis_angle(transform.local_x(), -mouse_delta.y);
+
+            rotation = xrotation * rotation;
+            let is_upside_down = rotation.mul_vec3(Vec3::Y).y < 0.0;
+            if is_upside_down {
+                rotation = transform.rotation;
+            }
+
+            rotation = yrotation * rotation;
+            transform.rotation = rotation;
+        }
 
         let speed = 0.2;
         let forward = transform.forward();
