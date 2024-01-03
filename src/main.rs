@@ -4,6 +4,7 @@
 
 use bevy::{
     core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass},
+    diagnostic::{DiagnosticsPlugin, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::mouse::MouseMotion,
     pbr::{wireframe::WireframePlugin, NotShadowCaster, PbrPlugin},
     prelude::*,
@@ -46,6 +47,14 @@ fn main() {
     ))
     .add_state::<AppState>()
     .add_state::<ControlsState>()
+    .add_plugins((
+        // DiagnosticsPlugin,
+        FrameTimeDiagnosticsPlugin,
+        LogDiagnosticsPlugin::filtered(vec![
+            FrameTimeDiagnosticsPlugin::FPS,
+            FrameTimeDiagnosticsPlugin::FRAME_TIME,
+        ]),
+    ))
     .add_plugins(WireframePlugin)
     .add_plugins(player::Player)
     .add_plugins(spectator::Spectator)
@@ -353,10 +362,7 @@ mod chunk {
 
     fn test_system() {}
 
-    fn setup_voxel_plugin(
-        mut commands: Commands,
-        mut game_state: ResMut<NextState<AppState>>,
-    ) {
+    fn setup_voxel_plugin(mut commands: Commands, mut game_state: ResMut<NextState<AppState>>) {
         let perlin = noise::Perlin::new(3243);
         let world = VoxelWorld { noise: perlin };
         commands.insert_resource(world);
@@ -372,11 +378,11 @@ mod chunk {
                 .with_rotation(Quat::from_axis_angle(Vec3::X, 3.5)),
             ..Default::default()
         });
-        commands.spawn((
-            SparseVoxelOctree::root(),
-            TransformBundle::default(),
-            VisibilityBundle::default(),
-        ));
+        // commands.spawn((
+        //     SparseVoxelOctree::root(),
+        //     TransformBundle::default(),
+        //     VisibilityBundle::default(),
+        // ));
     }
 
     fn spawn_chunk_tasks(
