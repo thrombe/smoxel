@@ -50,6 +50,7 @@ fn main() {
     .add_plugins(player::Player)
     .add_plugins(spectator::Spectator)
     .add_plugins(voxel::VoxelPlugin)
+    .add_plugins(vox::VoxLoader)
     .add_systems(Startup, setup)
     .add_systems(
         Update,
@@ -106,14 +107,11 @@ enum ControlsState {
 }
 
 mod voxel {
-    use bevy::core_pipeline::prepass::DeferredPrepass;
-    use bevy::ecs::system::CommandQueue;
     use bevy::pbr::DefaultOpaqueRendererMethod;
     use bevy::render::mesh::{Indices, VertexAttributeValues};
     use bevy::render::render_resource::{
         Extent3d, PrimitiveTopology, TextureDimension, TextureFormat,
     };
-    use bevy::render::texture::ImageSampler;
     use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
     use block_mesh::ndshape::ConstShape3u32;
     use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, VoxelVisibility};
@@ -124,7 +122,7 @@ mod voxel {
     use super::*;
 
     #[derive(Clone, Copy, Eq, PartialEq)]
-    struct U8Voxel(u8);
+    pub struct U8Voxel(u8);
     impl Voxel for U8Voxel {
         fn get_visibility(&self) -> VoxelVisibility {
             if self.0 == 0 {
@@ -132,6 +130,11 @@ mod voxel {
             } else {
                 VoxelVisibility::Opaque
             }
+        }
+    }
+    impl From<U8Voxel> for u8 {
+        fn from(val: U8Voxel) -> Self {
+            val.0
         }
     }
 
@@ -232,15 +235,19 @@ mod voxel {
     pub struct Chunk<const N: usize> {
         // voxels: Box<[u8]>,
         // materials: Box<[Vec4; 256]>,
-        voxels: Handle<Image>,
-        materials: Handle<Image>,
+        pub voxels: Handle<Image>,
+        pub materials: Handle<Image>,
     }
-    const DEFAULT_CHUNK_SIDE: u32 = 8 * 16;
-    const PADDED_DEFAULT_CHUNK_SIDE: u32 = 8 * 16 + 2;
-    type DefaultChunk = Chunk<{ 8 * 16 }>;
+    pub const DEFAULT_CHUNK_SIDE: u32 = 8 * 16;
+    pub const PADDED_DEFAULT_CHUNK_SIDE: u32 = 8 * 16 + 2;
+    pub type DefaultChunk = Chunk<{ 8 * 16 }>;
     /// N should be a multiple of 4
     impl<const N: usize> Chunk<N> {
-        fn new(assets: &mut Assets<Image>) -> Self {
+        pub fn n() -> usize {
+            N
+        }
+
+        pub fn empty(assets: &mut Assets<Image>) -> Self {
             assert_eq!(N % 4, 0, "N should be a multiple of 4");
             Self {
                 // voxels: vec![0; N*N*N].into_boxed_slice(),
@@ -268,71 +275,77 @@ mod voxel {
             }
         }
 
-        fn from_u8voxels(
+        pub fn from_u8voxels(
             assets: &mut Assets<Image>,
             voxels: Vec<U8Voxel>,
             materials: Vec<Vec4>,
         ) -> Self {
             assert_eq!(N % 4, 0, "N should be a multiple of 4");
             let side = N;
-            let pside = N+2;
+            let pside = N + 2;
             let mut new_voxels = vec![0; side.pow(3)];
             for z in 0..side {
                 for y in 0..side {
                     for x in 0..side {
                         new_voxels[side.pow(2) * z + side * y + x] =
-                            voxels[pside.pow(2) * (z + 1) + pside * (y + 1) + (x + 1)].0;
+                            voxels[pside.pow(2) * (z + 1) + pside * (y + 1) + (x + 1)].into();
                     }
                 }
             }
-            let mut new_img = Image::new(
+
+            Self {
+                voxels: assets.add(Self::voxel_image(new_voxels)),
+                materials: assets.add(Self::material_image(materials)),
+            }
+        }
+
+        pub fn voxel_image(voxels: Vec<u8>) -> Image {
+            Image::new(
                 Extent3d {
                     width: N as u32 / 4,
                     height: N as _,
                     depth_or_array_layers: N as _,
                 },
                 TextureDimension::D3,
-                new_voxels,
+                voxels,
                 TextureFormat::Rgba8Uint,
-            );
-            new_img.sampler = ImageSampler::nearest();
-            Self {
-                voxels: assets.add(new_img),
-                materials: assets.add(Image::new(
-                    Extent3d {
-                        width: 256,
-                        height: 1,
-                        depth_or_array_layers: 1,
-                    },
-                    TextureDimension::D1,
-                    materials
-                        .into_iter()
-                        .flat_map(|v| [v.x, v.y, v.z, v.w])
-                        .map(|v| (v * 255.0) as u8)
-                        .collect(),
-                    // vec![0; 4*256],
-                    TextureFormat::Rgba8Unorm,
-                )),
-            }
+            )
+        }
+
+        pub fn material_image(materials: Vec<Vec4>) -> Image {
+            Image::new(
+                Extent3d {
+                    width: 256,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D1,
+                materials
+                    .into_iter()
+                    .flat_map(|v| [v.x, v.y, v.z, v.w])
+                    .map(|v| (v * 255.0) as u8)
+                    .collect(),
+                TextureFormat::Rgba8Unorm,
+            )
         }
     }
 
     #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
     pub struct ChunkMaterial {
         #[uniform(0)]
-        side: u32,
+        pub side: u32,
         #[texture(1, sample_type = "u_int", dimension = "3d")]
-        voxels: Handle<Image>,
+        pub voxels: Handle<Image>,
         #[texture(2, dimension = "1d", sample_type = "float", filterable = false)]
-        materials: Handle<Image>,
+        pub materials: Handle<Image>,
         #[uniform(3)]
-        player_position: Vec3,
+        pub player_position: Vec3,
         #[uniform(4)]
-        resolution: Vec2,
+        pub resolution: Vec2,
         #[uniform(5)]
-        chunk_position: Vec3,
+        pub chunk_position: Vec3,
         #[uniform(6)]
-        chunk_size: f32,
+        pub chunk_size: f32,
     }
 
     impl Material for ChunkMaterial {
@@ -357,7 +370,7 @@ mod voxel {
     pub struct VoxelPlugin;
     impl Plugin for VoxelPlugin {
         fn build(&self, app: &mut App) {
-            app.add_systems(Startup, setup_voxel_plugin)
+            app.add_systems(Startup, (setup_voxel_plugin,))
                 // .add_systems(OnEnter(AppState::Playing), test_spawn)
                 // .insert_resource(DefaultOpaqueRendererMethod::deferred())
                 .insert_resource(SparseVoxelOctree::root())
@@ -545,45 +558,52 @@ mod voxel {
                     continue;
                 }
 
-                commands.entity(task_entity)
+                commands
+                    .entity(task_entity)
                     .with_children(|parent| {
-                        parent.spawn(MaterialMeshBundle {
-                            mesh: meshes.add(Mesh::from(shape::Cube { size: size * 2.0 })),
-                            material: chunk_materials.add(ChunkMaterial {
-                                side: DEFAULT_CHUNK_SIDE,
-                                voxels: chunk.voxels.clone(),
-                                materials: chunk.materials.clone(),
-                                player_position: Vec3::ZERO,
-                                resolution: Vec2::ZERO,
-                                chunk_position,
-                                chunk_size: size,
-                            }),
-                            visibility: Visibility::Visible,
-                            transform: Transform::from_translation(bb_mesh_relative_pos),
-                            ..Default::default()
-                        });
-                        parent.spawn(MaterialMeshBundle {
-                            mesh: mesh_handle.clone(),
-                            // material: materials.add(StandardMaterial {
-                            //     base_color: Color::rgb(0.8, 0.8, 0.8),
-                            //     alpha_mode: AlphaMode::Opaque,
-                            //     ..Default::default()
-                            // }),
-                            material: chunk_materials.add(ChunkMaterial {
-                                side: DEFAULT_CHUNK_SIDE,
-                                voxels: chunk.voxels.clone(),
-                                materials: chunk.materials.clone(),
-                                player_position: Vec3::ZERO,
-                                resolution: Vec2::ZERO,
-                                chunk_position,
-                                chunk_size: size,
-                            }),
-                            transform: Transform::from_translation(voxel_mesh_relative_pos),
-                            visibility: Visibility::Hidden,
-                            ..Default::default()
-                        });
+                        parent.spawn((
+                            MaterialMeshBundle {
+                                mesh: meshes.add(Mesh::from(shape::Cube { size: size * 2.0 })),
+                                material: chunk_materials.add(ChunkMaterial {
+                                    side: DEFAULT_CHUNK_SIDE,
+                                    voxels: chunk.voxels.clone(),
+                                    materials: chunk.materials.clone(),
+                                    player_position: Vec3::ZERO,
+                                    resolution: Vec2::ZERO,
+                                    chunk_position,
+                                    chunk_size: size,
+                                }),
+                                visibility: Visibility::Visible,
+                                transform: Transform::from_translation(bb_mesh_relative_pos),
+                                ..Default::default()
+                            },
+                            Name::new("Cube Mesh"),
+                        ));
+                        parent.spawn((
+                            MaterialMeshBundle {
+                                mesh: mesh_handle.clone(),
+                                // material: materials.add(StandardMaterial {
+                                //     base_color: Color::rgb(0.8, 0.8, 0.8),
+                                //     alpha_mode: AlphaMode::Opaque,
+                                //     ..Default::default()
+                                // }),
+                                material: chunk_materials.add(ChunkMaterial {
+                                    side: DEFAULT_CHUNK_SIDE,
+                                    voxels: chunk.voxels.clone(),
+                                    materials: chunk.materials.clone(),
+                                    player_position: Vec3::ZERO,
+                                    resolution: Vec2::ZERO,
+                                    chunk_position,
+                                    chunk_size: size,
+                                }),
+                                transform: Transform::from_translation(voxel_mesh_relative_pos),
+                                visibility: Visibility::Hidden,
+                                ..Default::default()
+                            },
+                            Name::new("Voxel Mesh"),
+                        ));
                     })
-                    .insert(chunk);
+                    .insert((Name::new("Chunk"), chunk));
             }
         }
     }
@@ -594,6 +614,7 @@ mod voxel {
         players: Query<(&PlayerEntity, &Transform)>,
         mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
         windows: Query<&Window>,
+        chunks: Query<(&Handle<ChunkMaterial>, &GlobalTransform)>,
     ) {
         let (_, player) = players.single();
         let window = windows.single();
@@ -602,6 +623,10 @@ mod voxel {
         for material in chunk_materials.iter_mut() {
             material.1.player_position = player.translation;
             material.1.resolution = Vec2::new(width, height);
+        }
+
+        for (material, pos) in chunks.iter() {
+            chunk_materials.get_mut(material).unwrap().chunk_position = pos.translation();
         }
     }
 
@@ -684,10 +709,278 @@ mod voxel {
     }
 }
 
-mod player {
-    use bevy::{core_pipeline::prepass::DeferredPrepass, pbr::DefaultOpaqueRendererMethod};
-    use bevy_inspector_egui::bevy_egui::{EguiContext, EguiContextQuery, EguiContexts};
+mod vox {
+    use bevy::{
+        asset::{AssetLoader, AsyncReadExt},
+        prelude::*,
+        utils::HashMap,
+    };
+    use dot_vox::{DotVoxData, Model, SceneNode};
 
+    use crate::voxel::{ChunkMaterial, DefaultChunk};
+
+    #[derive(Component, Clone, Copy)]
+    pub struct VoxChunk;
+
+    #[derive(Component, Clone, Copy)]
+    pub struct VoxScene;
+
+    #[derive(Asset, TypePath)]
+    pub struct Vox(DotVoxData);
+
+    #[derive(Default)]
+    pub struct VoxLoader;
+    impl Plugin for VoxLoader {
+        fn build(&self, app: &mut bevy::prelude::App) {
+            app.init_asset_loader::<VoxLoader>()
+                .init_asset::<Vox>()
+                .add_systems(Startup, test_load)
+                .add_systems(Update, on_vox_asset_event);
+        }
+    }
+
+    fn test_load(asset_server: Res<AssetServer>, mut commands: Commands) {
+        // TODO: decide what to do with this Vox oject. it is already loaded by VoxLoader
+        commands.spawn((
+            asset_server.load::<Vox>("./castle_pro.vox"),
+            GlobalTransform::default(),
+        ));
+    }
+
+    impl AssetLoader for VoxLoader {
+        type Asset = Vox;
+        type Settings = ();
+        type Error = anyhow::Error;
+
+        fn load<'a>(
+            &'a self,
+            reader: &'a mut bevy::asset::io::Reader,
+            _settings: &'a Self::Settings,
+            // NOTE: could use this to load DotVoxData directly into Handle<Image> and stuff,
+            // but it will also need to spawn chunks, so not doing that here.
+            _load_context: &'a mut bevy::asset::LoadContext,
+        ) -> bevy::utils::BoxedFuture<'a, Result<Self::Asset, Self::Error>> {
+            Box::pin(async {
+                let mut data = vec![];
+                reader.read_to_end(&mut data).await?;
+                let data = dot_vox::load_bytes(&data).map_err(anyhow::Error::msg)?;
+                Ok(Vox(data))
+            })
+        }
+
+        fn extensions(&self) -> &[&str] {
+            &["vox"]
+        }
+    }
+
+    fn on_vox_asset_event(
+        mut events: EventReader<AssetEvent<Vox>>,
+        vox_assets: Res<Assets<Vox>>,
+        mut commands: Commands,
+        mut images: ResMut<Assets<Image>>,
+        mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
+        mut meshes: ResMut<Assets<Mesh>>,
+        mut std_materials: ResMut<Assets<StandardMaterial>>,
+    ) {
+        for event in events.read() {
+            let AssetEvent::LoadedWithDependencies { id } = event else {
+                continue;
+            };
+            let data = vox_assets.get(*id).expect("event said it is loaded");
+
+            load_vox(
+                &mut commands,
+                &mut images,
+                &mut chunk_materials,
+                &mut meshes,
+                &mut std_materials,
+                &data.0,
+            );
+        }
+    }
+
+    fn load_vox(
+        commands: &mut Commands,
+        images: &mut Assets<Image>,
+        chunk_materials: &mut Assets<ChunkMaterial>,
+        meshes: &mut Assets<Mesh>,
+        std_materials: &mut Assets<StandardMaterial>,
+        data: &DotVoxData,
+    ) {
+        let castle_entity = commands
+            .spawn((
+                Name::new("VoxScene"),
+                VoxScene,
+                GlobalTransform::default(),
+                Transform::from_translation(Vec3::new(0.0, 0.0, 0.0)),
+                VisibilityBundle::default(),
+            ))
+            .id();
+
+        // type MagicaChunk = Chunk<256>;
+        type Chunk = DefaultChunk;
+        let side = Chunk::n();
+        let size = 16.0;
+
+        let materials = data
+            .palette
+            .iter()
+            .map(|c| Vec4::new(c.r as f32, c.g as f32, c.b as f32, c.a as f32))
+            .map(|c| c / 256.0)
+            .collect::<Vec<_>>();
+        let material_handle = images.add(Chunk::material_image(materials));
+        let cube_handle = meshes.add(Mesh::from(shape::Cube { size: size * 2.0 }));
+
+        let mut chunks = HashMap::new();
+
+        for (i, model) in data.models.iter().enumerate().take(50) {
+            let mut voxels = vec![0u8; side.pow(3)];
+            for voxel in &model.voxels {
+                voxels[(voxel.y) as usize * side.pow(2)
+                    + voxel.z as usize * side
+                    + voxel.x as usize] = voxel.i;
+            }
+            let voxels_image = Chunk::voxel_image(voxels);
+            let voxels_handle = images.add(voxels_image);
+
+            let chunk_material = chunk_materials.add(ChunkMaterial {
+                side: side as _,
+                voxels: voxels_handle.clone(),
+                materials: material_handle.clone(),
+                player_position: Vec3::ZERO,
+                resolution: Vec2::ZERO,
+                chunk_position: Vec3::ZERO,
+                chunk_size: size,
+            });
+
+            commands.entity(castle_entity).with_children(|castle| {
+                let chunk_entity = castle
+                    .spawn((
+                        Name::new("VoxChunk"),
+                        VoxChunk,
+                        MaterialMeshBundle {
+                            mesh: cube_handle.clone(),
+                            // material: std_materials.add(StandardMaterial {
+                            //     base_color: Color::rgb(0.8, 0.8, 0.8),
+                            //     alpha_mode: AlphaMode::Opaque,
+                            //     ..Default::default()
+                            // }),
+                            material: chunk_material,
+                            visibility: Visibility::Visible,
+                            ..Default::default()
+                        },
+                        Chunk {
+                            voxels: voxels_handle.clone(),
+                            materials: material_handle.clone(),
+                        },
+                    ))
+                    .id();
+
+                chunks.insert(i, chunk_entity);
+            });
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn set_transforms(
+            scene_index: usize,
+            chunks: &HashMap<usize, Entity>,
+            commands: &mut Commands,
+            scenes: &[SceneNode],
+            models: &[Model],
+            translation: Vec3,
+            rotation: Quat,
+            scale: Vec3,
+            voxel_size: f32,
+        ) {
+            let scene = &scenes[scene_index];
+            match scene {
+                SceneNode::Transform { frames, child, .. } => {
+                    assert_eq!(frames.len(), 1, "unimplemented");
+                    let frame = &frames[0];
+                    let translation = translation
+                        + frame
+                            .position()
+                            .map(|p| Vec3::new(p.x as _, p.z as _, p.y as _))
+                            .unwrap_or_default();
+                    let (rotation, scale) = frame
+                        .orientation()
+                        .map(|o| o.to_quat_scale())
+                        .map(|(q, f)| {
+                            (Quat::from_xyzw(q[0], q[2], q[1], q[3]), Vec3::from_array(f))
+                        })
+                        .unwrap_or_default();
+
+                    set_transforms(
+                        *child as _,
+                        chunks,
+                        commands,
+                        scenes,
+                        models,
+                        translation,
+                        rotation,
+                        scale,
+                        voxel_size,
+                    );
+                }
+                SceneNode::Group { children, .. } => {
+                    children.iter().for_each(|child| {
+                        set_transforms(
+                            *child as _,
+                            chunks,
+                            commands,
+                            scenes,
+                            models,
+                            translation,
+                            rotation,
+                            scale,
+                            voxel_size,
+                        );
+                    });
+                }
+                SceneNode::Shape {
+                    models: shape_models,
+                    ..
+                } => {
+                    assert_eq!(shape_models.len(), 1, "unimplemented");
+                    let Some(&chunk) = chunks.get(&(shape_models[0].model_id as usize)) else {
+                        return;
+                    };
+                    let model = &models[shape_models[0].model_id as usize];
+
+                    let mut offset = Vec3::new(
+                        if model.size.x % 2 == 0 { 0.0 } else { 0.5 },
+                        if model.size.z % 2 == 0 { 0.0 } else { 0.5 },
+                        if model.size.y % 2 == 0 { 0.0 } else { -0.5 },
+                    );
+                    offset = rotation.mul_vec3(offset);
+                    let center = rotation
+                        * (Vec3::new(model.size.x as _, model.size.y as _, model.size.z as _)
+                            / 2.0);
+                    let translation = translation - center * scale + offset;
+
+                    commands.entity(chunk).insert(
+                        Transform::from_translation(translation * voxel_size)
+                            .with_rotation(rotation), //.with_scale(scale),
+                    );
+                }
+            }
+        }
+
+        set_transforms(
+            0,
+            &chunks,
+            commands,
+            &data.scenes,
+            &data.models,
+            Vec3::default(),
+            Quat::default(),
+            Vec3::ZERO,
+            size / 256.0, // 256 is the maximum cunk size (in voxels) in the vox format
+        );
+    }
+}
+
+mod player {
     use super::*;
 
     #[derive(Component)]
