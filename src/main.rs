@@ -11,6 +11,8 @@ use bevy::{
     render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
     window::{CursorGrabMode, PrimaryWindow},
 };
+
+#[cfg(feature = "dev")]
 use bevy_inspector_egui::{
     bevy_egui::{self, EguiContexts},
     quick::WorldInspectorPlugin,
@@ -18,55 +20,60 @@ use bevy_inspector_egui::{
 use voxel::ChunkMaterial;
 
 fn main() {
-    App::new()
-        .add_plugins((
-            DefaultPlugins
-                .set(PbrPlugin {
-                    // The prepass is enabled by default on the StandardMaterial,
-                    // but you can disable it if you need to.
-                    //
-                    // prepass_enabled: false,
-                    ..default()
-                })
-                .set(AssetPlugin {
-                    watch_for_changes_override: Some(true),
-                    ..Default::default()
-                }),
-            MaterialPlugin::<CustomMaterial>::default(),
-            MaterialPlugin::<ChunkMaterial>::default(),
-            // MaterialPlugin::<PrepassOutputMaterial> {
-            //     // This material only needs to read the prepass textures,
-            //     // but the meshes using it should not contribute to the prepass render, so we can disable it.
-            //     prepass_enabled: false,
-            //     ..default()
-            // },
-        ))
-        .add_state::<AppState>()
-        .add_state::<ControlsState>()
-        .add_plugins(WorldInspectorPlugin::new())
-        .add_systems(
-            PreUpdate,
-            (absorb_egui_inputs,)
-                .after(bevy_egui::systems::process_input_system)
-                .after(bevy_egui::EguiSet::ProcessInput), // .after(bevy_egui::EguiSet::ProcessOutput), // .before(bevy_egui::EguiSet::BeginFrame),
-        )
-        .add_plugins(WireframePlugin)
-        .add_plugins(player::Player)
-        .add_plugins(spectator::Spectator)
-        .add_plugins(voxel::VoxelPlugin)
-        .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (
-                rotate,
-                // toggle_prepass_view
-            ),
-        )
-        // Disabling MSAA for maximum compatibility. Shader prepass with MSAA needs GPU capability MULTISAMPLED_SHADING
-        .insert_resource(Msaa::Off)
-        .run();
+    let mut app = App::new();
+
+    app.add_plugins((
+        DefaultPlugins
+            .set(PbrPlugin {
+                // The prepass is enabled by default on the StandardMaterial,
+                // but you can disable it if you need to.
+                //
+                // prepass_enabled: false,
+                ..default()
+            })
+            .set(AssetPlugin {
+                watch_for_changes_override: Some(true),
+                ..Default::default()
+            }),
+        MaterialPlugin::<CustomMaterial>::default(),
+        MaterialPlugin::<ChunkMaterial>::default(),
+        // MaterialPlugin::<PrepassOutputMaterial> {
+        //     // This material only needs to read the prepass textures,
+        //     // but the meshes using it should not contribute to the prepass render, so we can disable it.
+        //     prepass_enabled: false,
+        //     ..default()
+        // },
+    ))
+    .add_state::<AppState>()
+    .add_state::<ControlsState>()
+    .add_plugins(WireframePlugin)
+    .add_plugins(player::Player)
+    .add_plugins(spectator::Spectator)
+    .add_plugins(voxel::VoxelPlugin)
+    .add_systems(Startup, setup)
+    .add_systems(
+        Update,
+        (
+            rotate,
+            // toggle_prepass_view
+        ),
+    )
+    // Disabling MSAA for maximum compatibility. Shader prepass with MSAA needs GPU capability MULTISAMPLED_SHADING
+    .insert_resource(Msaa::Off);
+
+    #[cfg(feature = "dev")]
+    app.add_systems(
+        PreUpdate,
+        (absorb_egui_inputs,)
+            .after(bevy_egui::systems::process_input_system)
+            .after(bevy_egui::EguiSet::ProcessInput), // .after(bevy_egui::EguiSet::ProcessOutput), // .before(bevy_egui::EguiSet::BeginFrame),
+    )
+    .add_plugins(WorldInspectorPlugin::new());
+
+    app.run();
 }
 
+#[cfg(feature = "dev")]
 fn absorb_egui_inputs(mut mouse: ResMut<Input<MouseButton>>, mut contexts: EguiContexts) {
     let ctx = contexts.ctx_mut();
     // ctx.wants_pointer_input(); // NOTE: this egui method is broken. it returns false on the frame the thing is clicked
