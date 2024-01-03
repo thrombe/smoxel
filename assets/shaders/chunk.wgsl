@@ -1,7 +1,7 @@
 #import bevy_pbr::forward_io::VertexOutput
 
 @group(1) @binding(0) var<uniform> side: u32;
-@group(1) @binding(5) var<uniform> _chunk_pos: vec3<f32>;
+@group(1) @binding(5) var<uniform> chunk_pos: vec3<f32>;
 @group(1) @binding(6) var<uniform> chunk_size: f32;
 
 // 4 voxels per u32 TODO: little endian or big endian ? :/ (does it even matter?)
@@ -40,38 +40,41 @@ fn fragment(
     mesh: VertexOutput,
 ) -> @location(0) vec4<f32> {
     let screen_uv = mesh.position.xy/resolution.xy;
-    let ray_pos = mesh.world_position.xyz;
     let ray_origin = pos.xyz;
-    let ray_dir = normalize(ray_pos - ray_origin);
+    let ray_dir = normalize(mesh.world_position.xyz - ray_origin);
     let voxel_size = chunk_size * 2.0 / f32(side);
+    let chunk_center = chunk_pos;
 
-    // chunk pos at it's center
-    var chunk_pos = _chunk_pos;
-    // chunk pos at the corner
-    chunk_pos -= chunk_size;
+    // calculate ray hit pos
+    
+    var o = ray_origin;
+    // how much t for 1 voxel unit in this direction
+    var dt = (1.0 / ray_dir);
 
-    var o = ray_pos;
+    // https://gamedev.stackexchange.com/a/18459
+    // we know the ray hits, so we skip the 2 checks for ray not hitting the box
+    let lowest = chunk_center - chunk_size;
+    let highest = chunk_center + chunk_size;
+    let t1 = (lowest - o)*dt;
+    let t2 = (highest - o)*dt;
+    let tmin = min(t1, t2);
+
+    // if t is -ve, we want to march from the ray_origin instead. so clip it at 0.0
+    o += ray_dir * max(0.0, max(tmin.x, max(tmin.y, tmin.z)));
+
+    // cache the hit position
+    let ray_pos = o;
+
+
+    // marching inside the chunk
+
+    // we only want the magnitude of dt for marching
+    dt = abs(dt);
     // origin wrt chunk's origin
-    o -= chunk_pos;
+    o -= (chunk_pos - chunk_size);
     // make each voxel of size 1
     o /= voxel_size;
 
-    var bo = ray_pos;
-    bo -= ray_dir * 0.01;
-    bo -= chunk_pos;
-    bo /= chunk_size * 2.0;
-    var bdt = abs(1.0 / (-ray_dir));
-    var bstep = sign(-ray_dir);
-    var bt = (bstep * 0.5 + 0.5 - fract(bo) * bstep) * bdt;
-    var max_bt = min(bt.x, min(bt.y, bt.z));
-    bo += max_bt * (-ray_dir);
-    bo *= chunk_size * 2.0;
-    bo /= voxel_size;
-
-    o = select(bo, (ray_origin - chunk_pos)/voxel_size, length(bo * voxel_size + chunk_pos  - ray_pos) > length(ray_origin - ray_pos));
-
-    // how much t for 1 voxel unit in this direction
-    var dt = abs(1.0 / ray_dir);
     var step = sign(ray_dir);
     // how much t untill we hit a plane along this axis
     var t = (step * 0.5 + 0.5 - fract(o) * step) * dt;
@@ -80,7 +83,7 @@ fn fragment(
 
     var voxel: u32;
     var mask: vec3<f32>;
-    for (var i = 0u; i < side * 3u; i += 1u) {
+    for (var i = 0u; i < side * 3u - 2u; i += 1u) {
         voxel = get_voxel(march);
         if (voxel != 0u) {
             break;
@@ -93,14 +96,14 @@ fn fragment(
     if (voxel == 0u) {
         discard;
     }
-    let masked_t = mask * t;
-    let final_t = max(masked_t.x, max(masked_t.y, masked_t.z)) * voxel_size;
-    let ray_hit_pos = ray_pos + final_t * ray_dir;
+    // let masked_t = mask * t;
+    // let final_t = max(masked_t.x, max(masked_t.y, masked_t.z)) * voxel_size;
+    // let ray_hit_pos = ray_pos + final_t * ray_dir;
 
     var color = vec3<f32>(1.0);
     var alpha = 1.0;
-    color = vec3<f32>(20.0/length(ray_hit_pos - ray_origin));
-    // color = vec3<f32>(20.0/length(march * voxel_size + chunk_pos - ray_origin));
+    // color = vec3<f32>(20.0/length(ray_hit_pos - ray_origin));
+    // color = vec3<f32>(20.0/length(march * voxel_size + (chunk_pos + chunk_size) - ray_origin));
     color = get_color(voxel).xyz;
     return vec4<f32>(color, alpha);
 }
