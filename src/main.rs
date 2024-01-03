@@ -121,28 +121,21 @@ mod chunk {
 
     use super::*;
 
-    #[derive(Clone, Copy, Eq, PartialEq)]
-    pub struct U8Voxel(u8);
-    impl Voxel for U8Voxel {
-        fn get_visibility(&self) -> VoxelVisibility {
-            if self.0 == 0 {
-                VoxelVisibility::Empty
-            } else {
-                VoxelVisibility::Opaque
-            }
-        }
-    }
-    impl From<U8Voxel> for u8 {
-        fn from(val: U8Voxel) -> Self {
-            val.0
-        }
-    }
-
-    impl MergeVoxel for U8Voxel {
-        type MergeValue = Self;
-
-        fn merge_value(&self) -> Self::MergeValue {
-            *self
+    pub struct VoxelPlugin;
+    impl Plugin for VoxelPlugin {
+        fn build(&self, app: &mut App) {
+            app.add_systems(Startup, (setup_voxel_plugin,))
+                // .add_systems(OnEnter(AppState::Playing), test_spawn)
+                // .insert_resource(DefaultOpaqueRendererMethod::deferred())
+                .add_systems(
+                    Update,
+                    (
+                        spawn_chunk_tasks,
+                        resolve_chunk_tasks,
+                        update_chunk_material,
+                        test_system,
+                    ),
+                );
         }
     }
 
@@ -227,10 +220,7 @@ mod chunk {
             None
         }
     }
-    pub struct HitInfo {
-        origin: Vec3,
-        direction: Vec3, // assume normalized
-    }
+
     #[derive(Component, Clone, Debug)]
     pub struct Chunk<const N: usize> {
         // voxels: Box<[u8]>,
@@ -238,9 +228,30 @@ mod chunk {
         pub voxels: Handle<Image>,
         pub materials: Handle<Image>,
     }
+
     pub const DEFAULT_CHUNK_SIDE: u32 = 8 * 16;
     pub const PADDED_DEFAULT_CHUNK_SIDE: u32 = 8 * 16 + 2;
     pub type DefaultChunk = Chunk<{ 8 * 16 }>;
+
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    pub struct U8Voxel(u8);
+    impl Voxel for U8Voxel {
+        fn get_visibility(&self) -> VoxelVisibility {
+            if self.0 == 0 {
+                VoxelVisibility::Empty
+            } else {
+                VoxelVisibility::Opaque
+            }
+        }
+    }
+    impl MergeVoxel for U8Voxel {
+        type MergeValue = Self;
+
+        fn merge_value(&self) -> Self::MergeValue {
+            *self
+        }
+    }
+
     /// N should be a multiple of 4
     impl<const N: usize> Chunk<N> {
         pub fn n() -> usize {
@@ -288,7 +299,7 @@ mod chunk {
                 for y in 0..side {
                     for x in 0..side {
                         new_voxels[side.pow(2) * z + side * y + x] =
-                            voxels[pside.pow(2) * (z + 1) + pside * (y + 1) + (x + 1)].into();
+                            voxels[pside.pow(2) * (z + 1) + pside * (y + 1) + (x + 1)].0;
                     }
                 }
             }
@@ -365,24 +376,6 @@ mod chunk {
     #[derive(Component)]
     pub struct ChunkSpawnTask {
         task: Task<((Vec<U8Voxel>, Vec3, f32), Mesh)>,
-    }
-
-    pub struct VoxelPlugin;
-    impl Plugin for VoxelPlugin {
-        fn build(&self, app: &mut App) {
-            app.add_systems(Startup, (setup_voxel_plugin,))
-                // .add_systems(OnEnter(AppState::Playing), test_spawn)
-                // .insert_resource(DefaultOpaqueRendererMethod::deferred())
-                .add_systems(
-                    Update,
-                    (
-                        spawn_chunk_tasks,
-                        resolve_chunk_tasks,
-                        update_chunk_material,
-                        test_system,
-                    ),
-                );
-        }
     }
 
     fn test_system() {}
