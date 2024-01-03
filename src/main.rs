@@ -223,8 +223,6 @@ mod chunk {
 
     #[derive(Component, Clone, Debug)]
     pub struct Chunk<const N: usize> {
-        // voxels: Box<[u8]>,
-        // materials: Box<[Vec4; 256]>,
         pub voxels: Handle<Image>,
         pub materials: Handle<Image>,
     }
@@ -259,30 +257,9 @@ mod chunk {
         }
 
         pub fn empty(assets: &mut Assets<Image>) -> Self {
-            assert_eq!(N % 4, 0, "N should be a multiple of 4");
             Self {
-                // voxels: vec![0; N*N*N].into_boxed_slice(),
-                // materials: Box::new([Vec4::ZERO; 256]),
-                voxels: assets.add(Image::new_fill(
-                    Extent3d {
-                        width: N as u32 / 4,
-                        height: N as _,
-                        depth_or_array_layers: N as _,
-                    },
-                    TextureDimension::D3,
-                    &[0, 0, 0, 0],
-                    TextureFormat::Rgba8Uint,
-                )),
-                materials: assets.add(Image::new_fill(
-                    Extent3d {
-                        width: 4,
-                        height: 256,
-                        depth_or_array_layers: 1,
-                    },
-                    TextureDimension::D2,
-                    &[0, 0, 0, 0],
-                    TextureFormat::Rgba8Unorm, // Rgba8UnormSrgb is gamma-corrected
-                )),
+                voxels: assets.add(Self::voxel_image(vec![0; N.pow(3)])),
+                materials: assets.add(Self::material_image(vec![Default::default(); 256])),
             }
         }
 
@@ -291,7 +268,6 @@ mod chunk {
             voxels: Vec<U8Voxel>,
             materials: Vec<Vec4>,
         ) -> Self {
-            assert_eq!(N % 4, 0, "N should be a multiple of 4");
             let side = N;
             let pside = N + 2;
             let mut new_voxels = vec![0; side.pow(3)];
@@ -311,6 +287,7 @@ mod chunk {
         }
 
         pub fn voxel_image(voxels: Vec<u8>) -> Image {
+            assert_eq!(N % 4, 0, "N should be a multiple of 4");
             Image::new(
                 Extent3d {
                     width: N as u32 / 4,
@@ -336,7 +313,7 @@ mod chunk {
                     .flat_map(|v| [v.x, v.y, v.z, v.w])
                     .map(|v| (v * 255.0) as u8)
                     .collect(),
-                TextureFormat::Rgba8Unorm,
+                TextureFormat::Rgba8Unorm, // Rgba8UnormSrgb is gamma-corrected
             )
         }
     }
@@ -367,10 +344,6 @@ mod chunk {
         fn alpha_mode(&self) -> AlphaMode {
             AlphaMode::Opaque
         }
-
-        // fn deferred_fragment_shader() -> ShaderRef {
-        //     Self::fragment_shader()
-        // }
     }
 
     #[derive(Component)]
@@ -383,9 +356,6 @@ mod chunk {
     fn setup_voxel_plugin(
         mut commands: Commands,
         mut game_state: ResMut<NextState<AppState>>,
-        cameras: Query<Entity, With<Camera>>,
-        mut default_opaque_renderer_method: ResMut<DefaultOpaqueRendererMethod>,
-        asset_server: Res<AssetServer>,
     ) {
         let perlin = noise::Perlin::new(3243);
         let world = VoxelWorld { noise: perlin };
