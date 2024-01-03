@@ -27,8 +27,14 @@ fn get_voxel(pos: vec3<f32>) -> u32 {
     return voxel[xyzw];
 }
 
+fn get_color(index: u32) -> vec4<f32> {
+    return textureLoad(materials, index, 0);
+}
+
 // https://www.shadertoy.com/view/4dX3zl
 // http://www.cse.yorku.ca/~amana/research/grid.pdf
+// could also explore sphere/cube assisted marching
+// - [Raymarching Voxel](https://medium.com/@calebleak/raymarching-voxel-rendering-58018201d9d6)
 @fragment
 fn fragment(
     mesh: VertexOutput,
@@ -82,5 +88,6 @@ fn fragment(
     var alpha = 1.0;
     color = vec3<f32>(20.0/length(ray_hit_pos - ray_origin));
     // color = vec3<f32>(20.0/length(march * voxel_size + chunk_pos - ray_origin));
+    color = get_color(voxel).xyz;
     return vec4<f32>(color, alpha);
 }
