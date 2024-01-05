@@ -131,6 +131,7 @@ mod chunk {
     use bevy::render::render_resource::{
         Extent3d, PrimitiveTopology, TextureDimension, TextureFormat,
     };
+    use bevy::render::texture::TextureFormatPixelInfo;
     use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
     use block_mesh::ndshape::ConstShape3u32;
     use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, VoxelVisibility};
@@ -149,8 +150,8 @@ mod chunk {
                 .add_systems(
                     Update,
                     (
-                        spawn_chunk_tasks,
-                        resolve_chunk_tasks,
+                        // spawn_chunk_tasks,
+                        // resolve_chunk_tasks,
                         update_chunk_material,
                         test_system,
                     ),
@@ -240,17 +241,201 @@ mod chunk {
         }
     }
 
+    // TODO: turn all these to have a runtime parameter of size: UVec3
     #[derive(Component, Clone, Debug)]
-    pub struct Chunk<const N: usize> {
+    pub struct Chunk {
+        pub side: usize,
         pub voxels: Handle<Image>,
         pub materials: Handle<Image>,
+    }
+    #[derive(Clone, Debug)]
+    pub struct U8VoxelChunk {
+        pub voxels: Vec<U8Voxel>,
+        pub side: usize,
+    }
+    #[derive(Clone, Debug)]
+    pub struct ByteChunk {
+        pub voxels: Vec<u8>,
+        pub side: usize,
+    }
+    #[derive(Clone, Debug)]
+    pub struct MipChunk {
+        // voxels at the highest mip level
+        pub side: usize,
+
+        // length of this should always be (side/4)^3
+        // each UVec2 stores 4x4x4 voxels
+        pub voxels: Vec<UVec2>,
+    }
+
+    impl U8VoxelChunk {
+        pub fn byte_chunk(&self) -> ByteChunk {
+            let side = self.side;
+            let pside = side + 2;
+            let mut new_voxels = vec![0; side.pow(3)];
+            for z in 0..side {
+                for y in 0..side {
+                    for x in 0..side {
+                        new_voxels[side.pow(2) * z + side * y + x] =
+                            self.voxels[pside.pow(2) * (z + 1) + pside * (y + 1) + (x + 1)].0;
+                    }
+                }
+            }
+
+            ByteChunk {
+                side,
+                voxels: new_voxels,
+            }
+        }
+    }
+    impl ByteChunk {
+        // chunk side should be a multiple of 4
+        // 1 byte stores 2x2x2 voxels each a single bit
+        // 1 vec2<u32> stores 2x2x2 bytes, so 4x4x4 voxels
+        // can use TextureFormat::Rg32Uint
+        #[allow(clippy::erasing_op, clippy::identity_op)]
+        pub fn mip(&self) -> MipChunk {
+            let side = self.side;
+            let new_side = side / 4;
+            assert_eq!(side % 4, 0, "side should be a multiple of 4");
+
+            let voxel = |z, y, x| {
+                (self.voxels[z * side.pow(2) + y * side + x] != 0) as u32
+            };
+            let byte = |z, y, x| {
+                000 | voxel(z + 0, y + 0, x + 0) << 0b000
+                    | voxel(z + 0, y + 0, x + 1) << 0b001
+                    | voxel(z + 0, y + 1, x + 0) << 0b010
+                    | voxel(z + 0, y + 1, x + 1) << 0b011
+                    | voxel(z + 1, y + 0, x + 0) << 0b100
+                    | voxel(z + 1, y + 0, x + 1) << 0b101
+                    | voxel(z + 1, y + 1, x + 0) << 0b110
+                    | voxel(z + 1, y + 1, x + 1) << 0b111
+            };
+            let chunk1 = |z, y, x| {
+                000 | byte(z*4 + 0, y*4 + 0, x*4 + 0) << (0b000 * 8)
+                    | byte(z*4 + 0, y*4 + 0, x*4 + 2) << (0b001 * 8)
+                    | byte(z*4 + 0, y*4 + 2, x*4 + 0) << (0b010 * 8)
+                    | byte(z*4 + 0, y*4 + 2, x*4 + 2) << (0b011 * 8)
+            };
+            let chunk2 = |z, y, x| {
+                000 | byte(z*4 + 2, y*4 + 0, x*4 + 0) << (0b000 * 8)
+                    | byte(z*4 + 2, y*4 + 0, x*4 + 2) << (0b001 * 8)
+                    | byte(z*4 + 2, y*4 + 2, x*4 + 0) << (0b010 * 8)
+                    | byte(z*4 + 2, y*4 + 2, x*4 + 2) << (0b011 * 8)
+            };
+
+            let mut mip = vec![UVec2::ZERO; new_side.pow(3)];
+            for z in 0..new_side {
+                for y in 0..new_side {
+                    for x in 0..new_side {
+                        mip[new_side.pow(2) * z + new_side * y + x] =
+                            UVec2::new(chunk1(z, y, x), chunk2(z, y, x));
+                    }
+                }
+            }
+            MipChunk {
+                voxels: mip,
+                side,
+            }
+        }
+
+        pub fn to_image(self) -> Image {
+            assert_eq!(self.side % 4, 0, "side should be a multiple of 4");
+            Image::new(
+                Extent3d {
+                    width: self.side as u32 / 4,
+                    height: self.side as _,
+                    depth_or_array_layers: self.side as _,
+                },
+                TextureDimension::D3,
+                self.voxels,
+                TextureFormat::Rgba8Uint,
+            )
+        }
+    }
+    impl MipChunk {
+        // from mip (0, 1, 2) to (3, 4, 5)
+        // 0 -> 1 bit
+        // 1 -> 1 byte, 2x2x2 voxels
+        // 2 -> 2 x u32, 4x4x4 voxels
+        #[allow(clippy::erasing_op, clippy::identity_op)]
+        pub fn mip(&self) -> MipChunk {
+            let mip_side = self.side / 4;
+            let new_side = mip_side / 8;
+            assert_eq!(self.side % (4*8), 0, "side should be a multiple of 32");
+
+            let bit = |z, y, x| {
+                let chunk: &UVec2 = &self.voxels[z * mip_side.pow(2) + y * mip_side + x];
+                chunk.x != 0 || chunk.y != 0
+            };
+            let voxel = |z, y, x| {
+                (bit(z + 0, y + 0, x + 0)
+                    || bit(z + 0, y + 0, x + 1)
+                    || bit(z + 0, y + 1, x + 0)
+                    || bit(z + 0, y + 1, x + 1)
+                    || bit(z + 1, y + 0, x + 0)
+                    || bit(z + 1, y + 0, x + 1)
+                    || bit(z + 1, y + 1, x + 0)
+                    || bit(z + 1, y + 1, x + 1))
+                as u32
+            };
+            let byte = |z, y, x| {
+                000 | voxel(z + 0, y + 0, x + 0) << 0b000
+                    | voxel(z + 0, y + 0, x + 2) << 0b001
+                    | voxel(z + 0, y + 2, x + 0) << 0b010
+                    | voxel(z + 0, y + 2, x + 2) << 0b011
+                    | voxel(z + 2, y + 0, x + 0) << 0b100
+                    | voxel(z + 2, y + 0, x + 2) << 0b101
+                    | voxel(z + 2, y + 2, x + 0) << 0b110
+                    | voxel(z + 2, y + 2, x + 2) << 0b111
+            };
+            let chunk1 = |z, y, x| {
+                000 | byte(z*4 + 0, y*4 + 0, x*4 + 0) << (0b000 * 8)
+                    | byte(z*4 + 0, y*4 + 0, x*4 + 4) << (0b001 * 8)
+                    | byte(z*4 + 0, y*4 + 4, x*4 + 0) << (0b010 * 8)
+                    | byte(z*4 + 0, y*4 + 4, x*4 + 4) << (0b011 * 8)
+            };
+            let chunk2 = |z, y, x| chunk1(z + 1, y, x);
+
+            let mut mip = vec![UVec2::ZERO; new_side.pow(3)];
+            for z in 0..new_side {
+                for y in 0..new_side {
+                    for x in 0..new_side {
+                        mip[new_side.pow(2) * z + new_side * y + x] =
+                            UVec2::new(chunk1(z, y, x), chunk2(z, y, x));
+                    }
+                }
+            }
+            MipChunk {
+                voxels: mip,
+                side: mip_side/2,
+            }
+        }
+
+        pub fn into_image(self) -> Image {
+            let mip_side = self.side / 4;
+            Image::new(
+                Extent3d {
+                    width: mip_side as _,
+                    height: mip_side as _,
+                    depth_or_array_layers: mip_side as _,
+                },
+                TextureDimension::D3,
+                self.voxels
+                    .into_iter()
+                    .flat_map(|v| [v.x.to_le_bytes(), v.y.to_le_bytes()])
+                    .flatten()
+                    .collect(),
+                TextureFormat::Rg32Uint,
+            )
+        }
     }
 
     pub const DEFAULT_CHUNK_SIDE: u32 = 8 * 16;
     pub const PADDED_DEFAULT_CHUNK_SIDE: u32 = 8 * 16 + 2;
-    pub type DefaultChunk = Chunk<{ 8 * 16 }>;
 
-    #[derive(Clone, Copy, Eq, PartialEq)]
+    #[derive(Debug, Clone, Copy, Eq, PartialEq)]
     pub struct U8Voxel(u8);
     impl Voxel for U8Voxel {
         fn get_visibility(&self) -> VoxelVisibility {
@@ -270,53 +455,13 @@ mod chunk {
     }
 
     /// N should be a multiple of 4
-    impl<const N: usize> Chunk<N> {
-        pub fn n() -> usize {
-            N
-        }
-
+    impl Chunk {
         pub fn empty(assets: &mut Assets<Image>) -> Self {
             Self {
-                voxels: assets.add(Self::voxel_image(vec![0; N.pow(3)])),
+                voxels: assets.add(ByteChunk {voxels: vec![0; DEFAULT_CHUNK_SIDE.pow(3) as _], side: DEFAULT_CHUNK_SIDE as _}.to_image()),
                 materials: assets.add(Self::material_image(vec![Default::default(); 256])),
+                side: DEFAULT_CHUNK_SIDE as _,
             }
-        }
-
-        pub fn from_u8voxels(
-            assets: &mut Assets<Image>,
-            voxels: Vec<U8Voxel>,
-            materials: Vec<Vec4>,
-        ) -> Self {
-            let side = N;
-            let pside = N + 2;
-            let mut new_voxels = vec![0; side.pow(3)];
-            for z in 0..side {
-                for y in 0..side {
-                    for x in 0..side {
-                        new_voxels[side.pow(2) * z + side * y + x] =
-                            voxels[pside.pow(2) * (z + 1) + pside * (y + 1) + (x + 1)].0;
-                    }
-                }
-            }
-
-            Self {
-                voxels: assets.add(Self::voxel_image(new_voxels)),
-                materials: assets.add(Self::material_image(materials)),
-            }
-        }
-
-        pub fn voxel_image(voxels: Vec<u8>) -> Image {
-            assert_eq!(N % 4, 0, "N should be a multiple of 4");
-            Image::new(
-                Extent3d {
-                    width: N as u32 / 4,
-                    height: N as _,
-                    depth_or_array_layers: N as _,
-                },
-                TextureDimension::D3,
-                voxels,
-                TextureFormat::Rgba8Uint,
-            )
         }
 
         pub fn material_image(materials: Vec<Vec4>) -> Image {
@@ -341,8 +486,6 @@ mod chunk {
     pub struct ChunkMaterial {
         #[uniform(0)]
         pub side: u32,
-        #[texture(1, sample_type = "u_int", dimension = "3d")]
-        pub voxels: Handle<Image>,
         #[texture(2, dimension = "1d", sample_type = "float", filterable = false)]
         pub materials: Handle<Image>,
         #[uniform(3)]
@@ -353,6 +496,12 @@ mod chunk {
         pub chunk_position: Vec3,
         #[uniform(6)]
         pub chunk_size: f32,
+        #[texture(1, sample_type = "u_int", dimension = "3d")]
+        pub voxels: Handle<Image>,
+        #[texture(7, sample_type = "u_int", dimension = "3d")]
+        pub voxels_mip1: Handle<Image>,
+        #[texture(8, sample_type = "u_int", dimension = "3d")]
+        pub voxels_mip2: Handle<Image>,
     }
 
     impl Material for ChunkMaterial {
@@ -367,7 +516,7 @@ mod chunk {
 
     #[derive(Component)]
     pub struct ChunkSpawnTask {
-        task: Task<((Vec<U8Voxel>, Vec3, f32), Mesh)>,
+        task: Task<((U8VoxelChunk, Vec3, f32), Mesh)>,
     }
 
     fn test_system() {}
@@ -395,6 +544,7 @@ mod chunk {
         // ));
     }
 
+    /*
     fn spawn_chunk_tasks(
         mut commands: Commands,
         world: Res<VoxelWorld>,
@@ -417,7 +567,7 @@ mod chunk {
             let task = threadpool.spawn(async move {
                 let side = DEFAULT_CHUNK_SIDE as usize;
                 let pside = PADDED_DEFAULT_CHUNK_SIDE as usize;
-                let mut voxels = vec![U8Voxel(0); pside * pside * pside];
+                let mut voxels = U8VoxelChunk(vec![U8Voxel(0); pside * pside * pside]);
                 let scale = 0.09;
                 for z in 0..side {
                     for x in 0..side {
@@ -431,13 +581,13 @@ mod chunk {
                             let yf =
                                 ((y as f32 - side as f32 / 2.0) / side as f32) * size * 2.0 + pos.y;
                             if (yf as f64 + 20.0) < v * 10.0 {
-                                voxels[(z + 1) * pside * pside + (y + 1) * pside + (x + 1)] =
+                                voxels.0[(z + 1) * pside * pside + (y + 1) * pside + (x + 1)] =
                                     U8Voxel(1);
                             }
                         }
                     }
                 }
-                let mut buffer = GreedyQuadsBuffer::new(voxels.len());
+                let mut buffer = GreedyQuadsBuffer::new(voxels.0.len());
                 type ChunkShape = ConstShape3u32<
                     PADDED_DEFAULT_CHUNK_SIDE,
                     PADDED_DEFAULT_CHUNK_SIDE,
@@ -445,7 +595,7 @@ mod chunk {
                 >;
                 let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
                 greedy_quads(
-                    &voxels,
+                    &voxels.0,
                     &ChunkShape {},
                     [0; 3],
                     [DEFAULT_CHUNK_SIDE + 1; 3],
@@ -496,13 +646,13 @@ mod chunk {
         }
     }
 
-    fn resolve_chunk_tasks(
+    fn resolve_chunk_tasks<const N: usize>(
         mut commands: Commands,
         mut meshes: ResMut<Assets<Mesh>>,
         mut materials: ResMut<Assets<StandardMaterial>>,
         mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
         mut images: ResMut<Assets<Image>>,
-        mut tasks: Query<(Entity, &mut ChunkSpawnTask)>,
+        mut tasks: Query<(Entity, &mut ChunkSpawnTask<N>)>,
     ) {
         for (task_entity, mut task) in tasks.iter_mut() {
             // tasks can be cancelled. so it returns an Option
@@ -514,7 +664,11 @@ mod chunk {
                 let mesh_handle = meshes.add(mesh);
                 let mut material_buffer = vec![Default::default(); 256];
                 material_buffer[1] = Vec4::new(0.8, 0.8, 0.8, 1.0);
-                let chunk = DefaultChunk::from_u8voxels(&mut images, voxels, material_buffer);
+                // let chunk = DefaultChunk::from_u8voxels(&mut images, voxels, material_buffer);
+                let chunk = DefaultChunk {
+                    voxels: images.add(voxels.byte_chunk().to_image()),
+                    materials: images.add(DefaultChunk::material_image(material_buffer)),
+                };
 
                 let r = (DEFAULT_CHUNK_SIDE as f32 + 2.0) / (DEFAULT_CHUNK_SIDE as f32);
                 let bb_mesh_relative_pos = Vec3::ZERO;
@@ -525,7 +679,7 @@ mod chunk {
                         TransformBundle::from_transform(Transform::from_translation(pos)),
                         VisibilityBundle::default(),
                     ))
-                    .remove::<ChunkSpawnTask>();
+                    .remove::<ChunkSpawnTask<N>>();
 
                 if empty_mesh {
                     continue;
@@ -580,6 +734,7 @@ mod chunk {
             }
         }
     }
+    */
 
     // TODO: use a custom pipeline and remove this from this material
     // or just use ExtractComponentPlugin<{ pos: Vec3 }>
@@ -612,7 +767,7 @@ mod vox {
     };
     use dot_vox::{DotVoxData, Model, SceneNode};
 
-    use crate::chunk::{ChunkMaterial, DefaultChunk};
+    use crate::chunk::{ByteChunk, Chunk, ChunkMaterial, DEFAULT_CHUNK_SIDE};
 
     #[derive(Component, Clone, Copy)]
     pub struct VoxChunk;
@@ -712,9 +867,7 @@ mod vox {
             ))
             .id();
 
-        // type MagicaChunk = Chunk<256>;
-        type Chunk = DefaultChunk;
-        let side = Chunk::n();
+        let side = DEFAULT_CHUNK_SIDE as usize;
         let size = 16.0;
 
         let materials = data
@@ -729,15 +882,24 @@ mod vox {
         let mut chunks = HashMap::new();
 
         // TODO: vox chunks can be of side 256, but this code crashes on chunk size > DEFAULT_CHUNK_SIDE
-        for (i, model) in data.models.iter().enumerate().take(50) {
+        for (i, model) in data.models.iter().enumerate().skip(2) {
             let mut voxels = vec![0u8; side.pow(3)];
             for voxel in &model.voxels {
                 voxels[(voxel.y) as usize * side.pow(2)
                     + voxel.z as usize * side
                     + voxel.x as usize] = voxel.i;
             }
-            let voxels_image = Chunk::voxel_image(voxels);
-            let voxels_handle = images.add(voxels_image);
+            let voxels = ByteChunk { voxels, side };
+            let mip1 = voxels.mip();
+            let mip2 = mip1.mip();
+            let voxels_handle = images.add(voxels.to_image());
+            let mip1_handle = images.add(mip1.into_image());
+            let mip2_handle = images.add(mip2.into_image());
+            let chunk = Chunk {
+                voxels: voxels_handle.clone(),
+                materials: material_handle.clone(),
+                side,
+            };
 
             let chunk_material = chunk_materials.add(ChunkMaterial {
                 side: side as _,
@@ -747,6 +909,8 @@ mod vox {
                 resolution: Vec2::ZERO,
                 chunk_position: Vec3::ZERO,
                 chunk_size: size,
+                voxels_mip1: mip1_handle,
+                voxels_mip2: mip2_handle,
             });
 
             commands.entity(castle_entity).with_children(|castle| {
@@ -765,10 +929,7 @@ mod vox {
                             visibility: Visibility::Visible,
                             ..Default::default()
                         },
-                        Chunk {
-                            voxels: voxels_handle.clone(),
-                            materials: material_handle.clone(),
-                        },
+                        chunk,
                     ))
                     .id();
 
