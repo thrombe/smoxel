@@ -233,29 +233,31 @@ fn fragment(
     var t = (step * (0.5 - fract(o/4.0)) + 0.5) * dt * 4.0;
     var voxel: u32;
     var mask: vec3<f32>;
-    var last_t: f32 = min(t.x, min(t.y, t.z));
-    last_t = 0.0;
+    var last_t = 0.0;
     for (var i = 0u; i < (side / 4u) * 3u - 2u; i += 1u) {
         if any(marchi > i32(side) || marchi < 0) {
             break;
         }
-        if mip2(march) {
+        var mip = get_mip1(march);
+        if any(mip > 0u) {
             if (true) {
                 // return vec4(vec3(last_t) / 200.0, 1.0);
-            //     return vec4(march / 200.0, 1.0);
+                // return vec4(march / 200.0, 1.0);
             }
             var o = o + ray_dir * (last_t + 0.001);
             var march = floor(o) + 0.5;
             var marchi = vec3<i32>(march);
             var t = (step * (0.5 - fract(o/2.0)) + 0.5) * dt * 2.0;
             var mod4 = marchi % 4;
-            var last_t: f32 = min(t.x, min(t.y, t.z));
-            last_t = 0.0;
+            var last_t = 0.0;
             for (var i2 = 0u; i2 < 4u; i2 += 1u) {
                 if (any(mod4 >= 4 || mod4 < 0)) {
                     break;
                 }
-                if (mip1(march)) {
+                let m = vec3<u32>(mod4 > 1) << vec3(0u, 1u, 2u);
+                let index = m.x | m.y | m.z;
+                let comp = getMipByte(mip, index);
+                if (comp > 0u) {
                     if (true) {
                         // return vec4(vec3(last_t) / 200.0, 1.0);
                     }
@@ -264,17 +266,23 @@ fn fragment(
                     var marchi = vec3<i32>(march);
                     var t = (step * (0.5 - fract(o)) + 0.5) * dt;
                     var mod2 = marchi % 2;
-                    var last_t: f32 = min(t.x, min(t.y, t.z));
-                    last_t = 0.0;
+                    var last_t = 0.0;
                     for (var i3 = 0u; i3 < 4u; i3 += 1u) {
                         if any(mod2 >= 2 || mod2 < 0) {
                             break;
                         }
-                        if (mip0(march)) {
+                        let m = vec3<u32>(mod2 > 0) << vec3(0u, 1u, 2u);
+                        let index = m.x | m.y | m.z;
+                        let voxel = getMipBit(comp, index);
+                        if voxel > 0u {
                             if (true) {
-                                // return vec4(vec3(last_t) / 200.0, 1.0);
+                                // return vec4(march / 200.0, 1.0);
                             }
-                            return get_color(get_voxel(march));
+                            let voxel = get_voxel(march);
+                            // check again cux of precision issues ig :/
+                            if voxel > 0u {
+                                return get_color(voxel);
+                            }
                         }
                         let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
                         let mask = vec3<f32>(maski);
@@ -292,16 +300,13 @@ fn fragment(
                 mod4 += maski * stepi * 2;
             }
         }
-        last_t = min(t.x, min(t.y, t.z));
         let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
         let mask = vec3<f32>(maski);
+        last_t = min(t.x, min(t.y, t.z));
         t += mask * dt * 4.0;
         march += mask * step * 4.0;
         marchi += maski * stepi * 4;
     }
-    // if mip2(march) {
-    //     return vec4(march / 200.0, 1.0);
-    // }
     if (voxel == 0u) {
         discard;
     }
