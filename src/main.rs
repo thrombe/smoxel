@@ -299,9 +299,7 @@ mod chunk {
             let new_side = side / 4;
             assert_eq!(side % 4, 0, "side should be a multiple of 4");
 
-            let voxel = |z, y, x| {
-                (self.voxels[z * side.pow(2) + y * side + x] != 0) as u32
-            };
+            let voxel = |z, y, x| (self.voxels[z * side.pow(2) + y * side + x] != 0) as u32;
             let byte = |z, y, x| {
                 000 | voxel(z + 0, y + 0, x + 0) << 0b000
                     | voxel(z + 0, y + 0, x + 1) << 0b001
@@ -313,16 +311,16 @@ mod chunk {
                     | voxel(z + 1, y + 1, x + 1) << 0b111
             };
             let chunk1 = |z, y, x| {
-                000 | byte(z*4 + 0, y*4 + 0, x*4 + 0) << (0b000 * 8)
-                    | byte(z*4 + 0, y*4 + 0, x*4 + 2) << (0b001 * 8)
-                    | byte(z*4 + 0, y*4 + 2, x*4 + 0) << (0b010 * 8)
-                    | byte(z*4 + 0, y*4 + 2, x*4 + 2) << (0b011 * 8)
+                000 | byte(z * 4 + 0, y * 4 + 0, x * 4 + 0) << (0b000 * 8)
+                    | byte(z * 4 + 0, y * 4 + 0, x * 4 + 2) << (0b001 * 8)
+                    | byte(z * 4 + 0, y * 4 + 2, x * 4 + 0) << (0b010 * 8)
+                    | byte(z * 4 + 0, y * 4 + 2, x * 4 + 2) << (0b011 * 8)
             };
             let chunk2 = |z, y, x| {
-                000 | byte(z*4 + 2, y*4 + 0, x*4 + 0) << (0b000 * 8)
-                    | byte(z*4 + 2, y*4 + 0, x*4 + 2) << (0b001 * 8)
-                    | byte(z*4 + 2, y*4 + 2, x*4 + 0) << (0b010 * 8)
-                    | byte(z*4 + 2, y*4 + 2, x*4 + 2) << (0b011 * 8)
+                000 | byte(z * 4 + 2, y * 4 + 0, x * 4 + 0) << (0b000 * 8)
+                    | byte(z * 4 + 2, y * 4 + 0, x * 4 + 2) << (0b001 * 8)
+                    | byte(z * 4 + 2, y * 4 + 2, x * 4 + 0) << (0b010 * 8)
+                    | byte(z * 4 + 2, y * 4 + 2, x * 4 + 2) << (0b011 * 8)
             };
 
             let mut mip = vec![UVec2::ZERO; new_side.pow(3)];
@@ -334,10 +332,7 @@ mod chunk {
                     }
                 }
             }
-            MipChunk {
-                voxels: mip,
-                side,
-            }
+            MipChunk { voxels: mip, side }
         }
 
         pub fn to_image(self) -> Image {
@@ -363,7 +358,7 @@ mod chunk {
         pub fn mip(&self) -> MipChunk {
             let mip_side = self.side / 4;
             let new_side = mip_side / 8;
-            assert_eq!(self.side % (4*8), 0, "side should be a multiple of 32");
+            assert_eq!(self.side % (4 * 8), 0, "side should be a multiple of 32");
 
             let bit = |z, y, x| {
                 let chunk: &UVec2 = &self.voxels[z * mip_side.pow(2) + y * mip_side + x];
@@ -377,8 +372,7 @@ mod chunk {
                     || bit(z + 1, y + 0, x + 0)
                     || bit(z + 1, y + 0, x + 1)
                     || bit(z + 1, y + 1, x + 0)
-                    || bit(z + 1, y + 1, x + 1))
-                as u32
+                    || bit(z + 1, y + 1, x + 1)) as u32
             };
             let byte = |z, y, x| {
                 000 | voxel(z + 0, y + 0, x + 0) << 0b000
@@ -391,10 +385,10 @@ mod chunk {
                     | voxel(z + 2, y + 2, x + 2) << 0b111
             };
             let chunk1 = |z, y, x| {
-                000 | byte(z*4 + 0, y*4 + 0, x*4 + 0) << (0b000 * 8)
-                    | byte(z*4 + 0, y*4 + 0, x*4 + 4) << (0b001 * 8)
-                    | byte(z*4 + 0, y*4 + 4, x*4 + 0) << (0b010 * 8)
-                    | byte(z*4 + 0, y*4 + 4, x*4 + 4) << (0b011 * 8)
+                000 | byte(z * 4 + 0, y * 4 + 0, x * 4 + 0) << (0b000 * 8)
+                    | byte(z * 4 + 0, y * 4 + 0, x * 4 + 4) << (0b001 * 8)
+                    | byte(z * 4 + 0, y * 4 + 4, x * 4 + 0) << (0b010 * 8)
+                    | byte(z * 4 + 0, y * 4 + 4, x * 4 + 4) << (0b011 * 8)
             };
             let chunk2 = |z, y, x| chunk1(z + 1, y, x);
 
@@ -409,7 +403,7 @@ mod chunk {
             }
             MipChunk {
                 voxels: mip,
-                side: mip_side/2,
+                side: mip_side / 2,
             }
         }
 
@@ -458,7 +452,13 @@ mod chunk {
     impl Chunk {
         pub fn empty(assets: &mut Assets<Image>) -> Self {
             Self {
-                voxels: assets.add(ByteChunk {voxels: vec![0; DEFAULT_CHUNK_SIDE.pow(3) as _], side: DEFAULT_CHUNK_SIDE as _}.to_image()),
+                voxels: assets.add(
+                    ByteChunk {
+                        voxels: vec![0; DEFAULT_CHUNK_SIDE.pow(3) as _],
+                        side: DEFAULT_CHUNK_SIDE as _,
+                    }
+                    .to_image(),
+                ),
                 materials: assets.add(Self::material_image(vec![Default::default(); 256])),
                 side: DEFAULT_CHUNK_SIDE as _,
             }
