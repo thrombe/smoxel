@@ -870,11 +870,15 @@ mod vox {
         let side = DEFAULT_CHUNK_SIDE as usize;
         let size = 16.0;
 
-        let materials = data
-            .palette
-            .iter()
-            .map(|c| Vec4::new(c.r as f32, c.g as f32, c.b as f32, c.a as f32))
+        let materials = [Vec4::splat(0.0)]
+            .into_iter()
+            .chain(
+                data.palette
+                    .iter()
+                    .map(|c| Vec4::new(c.r as f32, c.g as f32, c.b as f32, c.a as f32)),
+            )
             .map(|c| c / 256.0)
+            .take(256) // idk why this buffer has 1 extra material :/
             .collect::<Vec<_>>();
         let material_handle = images.add(Chunk::material_image(materials));
         let cube_handle = meshes.add(Mesh::from(shape::Cube { size: size * 2.0 }));
@@ -882,12 +886,12 @@ mod vox {
         let mut chunks = HashMap::new();
 
         // TODO: vox chunks can be of side 256, but this code crashes on chunk size > DEFAULT_CHUNK_SIDE
-        for (i, model) in data.models.iter().enumerate().skip(2) {
+        for (i, model) in data.models.iter().enumerate() {
             let mut voxels = vec![0u8; side.pow(3)];
             for voxel in &model.voxels {
                 voxels[(voxel.y) as usize * side.pow(2)
                     + voxel.z as usize * side
-                    + voxel.x as usize] = voxel.i;
+                    + voxel.x as usize] = voxel.i + 1; // 1st material is enforced to be empty above.
             }
             let voxels = ByteChunk { voxels, side };
             let mip1 = voxels.mip();
