@@ -94,7 +94,7 @@ fn getMipByte(mip: vec2<u32>, index: u32) -> u32 {
         case 7u {
             component = mip.y & (255u << 24u);
         }
-        default {
+        default: {
             // discard;
         }
     }
@@ -175,6 +175,7 @@ fn mip2(march: vec3<f32>) -> bool {
 // http://www.cse.yorku.ca/~amana/research/grid.pdf
 // could also explore sphere/cube assisted marching
 // - [Raymarching Voxel](https://medium.com/@calebleak/raymarching-voxel-rendering-58018201d9d6)
+// - [VertexOutput](https://github.com/bevyengine/bevy/blob/71adb77a2ea97027ae54dea5552ba9fdbfb707fd/crates/bevy_pbr/src/render/forward_io.wgsl#L30)
 @fragment
 fn fragment(
     mesh: VertexOutput,
@@ -185,6 +186,7 @@ fn fragment(
         // return vec4<f32>(f32(v1.x + v2.x));
         // return vec4<f32>(1.0);
         // return vec4<f32>((mesh.world_position.xyz - chunk_pos)/1000.0, 1.0);
+        // return vec4<f32>(mesh.uv, 1.0, 1.0);
     }
     let screen_uv = mesh.position.xy/resolution.xy;
     let ray_origin = pos.xyz;
@@ -276,6 +278,9 @@ fn fragment(
                         let voxel = getMipBit(comp, index);
                         if voxel > 0u {
                             if (true) {
+                                // if marchi.z == 0 || marchi.x == 0 {
+                                //     return vec4(march / 200.0, 1.0);
+                                // }
                                 // return vec4(march / 200.0, 1.0);
                             }
                             let voxel = get_voxel(march);

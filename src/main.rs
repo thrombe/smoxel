@@ -9,7 +9,11 @@ use bevy::{
     pbr::{wireframe::WireframePlugin, NotShadowCaster, PbrPlugin},
     prelude::*,
     reflect::TypePath,
-    render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
+    render::{
+        render_resource::{AsBindGroup, ShaderRef, ShaderType},
+        settings::PowerPreference,
+        RenderPlugin,
+    },
     window::{CursorGrabMode, PrimaryWindow},
 };
 
@@ -25,6 +29,14 @@ fn main() {
 
     app.add_plugins((
         DefaultPlugins
+            .set(RenderPlugin {
+                render_creation: bevy::render::settings::RenderCreation::Automatic(
+                    bevy::render::settings::WgpuSettings {
+                        // power_preference: PowerPreference::LowPower,
+                        ..Default::default()
+                    },
+                ),
+            })
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Smoxel".into(),
@@ -145,18 +157,116 @@ mod chunk {
     pub struct VoxelPlugin;
     impl Plugin for VoxelPlugin {
         fn build(&self, app: &mut App) {
-            app.add_systems(Startup, (setup_voxel_plugin,))
-                // .add_systems(OnEnter(AppState::Playing), test_spawn)
-                // .insert_resource(DefaultOpaqueRendererMethod::deferred())
-                .add_systems(
-                    Update,
-                    (
-                        || {},
-                        // spawn_chunk_tasks,
-                        // resolve_chunk_tasks,
-                        update_chunk_material,
-                    ),
-                );
+            app.add_systems(
+                Startup,
+                (
+                    setup_voxel_plugin,
+                    // test_voxels,
+                ),
+            )
+            // .add_systems(OnEnter(AppState::Playing), test_spawn)
+            // .insert_resource(DefaultOpaqueRendererMethod::deferred())
+            .add_systems(
+                Update,
+                (
+                    || {},
+                    // spawn_chunk_tasks,
+                    // resolve_chunk_tasks,
+                    update_chunk_material,
+                ),
+            );
+        }
+    }
+
+    fn test_voxels(
+        mut commands: Commands,
+        mut images: ResMut<Assets<Image>>,
+        mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
+        mut meshes: ResMut<Assets<Mesh>>,
+    ) {
+        let scene_entity = commands
+            .spawn((
+                Name::new("test voxels"),
+                GlobalTransform::default(),
+                Transform::from_translation(Vec3::new(0.0, -500.0, 0.0)),
+                VisibilityBundle::default(),
+            ))
+            .id();
+
+        let size = 16.0;
+        let side = 128usize;
+        let lim = 512;
+        let k = 0.09;
+        let perlin = noise::Perlin::new(234342);
+
+        let mut tc = TiledChunker::with_chunk_size(side);
+        for z in 0..lim {
+            for y in 0..lim {
+                for x in 0..lim {
+                    let pos = IVec3::new(x, y, z);
+
+                    // let val = perlin.get([x as f64 * k, y as f64 * k, z as f64 * k]);
+                    let val = rand::random::<f32>();
+                    if val < 0.001 {
+                        tc.set_voxel(pos, rand::random()).expect("should not fail");
+                    }
+                }
+            }
+            dbg!(z);
+        }
+        let materials = std::iter::once(Vec4::splat(0.0))
+            .chain((1..256).map(|_| {
+                Vec4::new(
+                    rand::random::<f32>() * 0.5 + 0.2,
+                    rand::random::<f32>() * 0.5 + 0.2,
+                    rand::random::<f32>() * 0.5 + 0.2,
+                    1.0,
+                )
+            }))
+            .collect();
+
+        let material_handle = images.add(Chunk::material_image(materials));
+        let cube_handle = meshes.add(Mesh::from(shape::Cube { size: size * 2.0 }));
+        for (chunk_index, chunk) in tc.chunks.into_iter() {
+            let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
+            let chunk_pos = chunk_pos * size * 2.0;
+            // + tc.chunk_side as f32 / 2.0;
+
+            let mip1 = chunk.mip();
+            let mip2 = mip1.mip();
+            let voxels_handle = images.add(chunk.to_image());
+            let mip1_handle = images.add(mip1.into_image());
+            let mip2_handle = images.add(mip2.into_image());
+            let chunk = Chunk {
+                voxels: voxels_handle.clone(),
+                materials: material_handle.clone(),
+                side,
+            };
+
+            let chunk_material = chunk_materials.add(ChunkMaterial {
+                side: side as _,
+                voxels: voxels_handle.clone(),
+                materials: material_handle.clone(),
+                player_position: Vec3::ZERO,
+                resolution: Vec2::ZERO,
+                chunk_position: chunk_pos,
+                chunk_size: size,
+                voxels_mip1: mip1_handle,
+                voxels_mip2: mip2_handle,
+            });
+
+            commands.entity(scene_entity).with_children(|builder| {
+                builder.spawn((
+                    Name::new("test voxel chunk"),
+                    MaterialMeshBundle {
+                        mesh: cube_handle.clone(),
+                        material: chunk_material,
+                        transform: Transform::from_translation(chunk_pos).with_scale(Vec3::NEG_ONE),
+                        ..Default::default()
+                    },
+                    chunk,
+                ));
+            });
         }
     }
 
@@ -682,6 +792,7 @@ mod chunk {
         }
     }
 
+    // - [AsBindGroup in bevy::render::render_resource - Rust](https://docs.rs/bevy/latest/bevy/render/render_resource/trait.AsBindGroup.html)
     #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
     pub struct ChunkMaterial {
         #[uniform(0)]
@@ -1163,11 +1274,7 @@ mod vox {
                 );
                 // TODO: inserting each voxel using tc.set_voxel is gonna be slow as each voxel will require a hashmap.get
                 for voxel in &model.model.voxels {
-                    let mut voxel_pos = IVec3::new(
-                        voxel.x as _,
-                        voxel.y as _,
-                        voxel.z as _,
-                    );
+                    let mut voxel_pos = IVec3::new(voxel.x as _, voxel.y as _, voxel.z as _);
 
                     // if model.scale.x.is_sign_negative() {
                     //     voxel_pos.x = model.model.size.x as i32 - voxel.x as i32 - 1;
@@ -1179,6 +1286,7 @@ mod vox {
                     //     voxel_pos.x = model.model.size.z as i32 - voxel.z as i32 - 1;
                     // }
 
+                    // https://github.com/jpaver/opengametools/blob/a45c00f7c4ff2e7f750099cba7fcc299e0d08096/src/ogt_vox.h#L120
                     let voxel_pos =
                         Vec3::new(voxel_pos.x as _, voxel_pos.y as _, voxel_pos.z as _) - pivot;
                     let voxel_pos = model.rotation.mul_vec3(voxel_pos);
@@ -1193,10 +1301,8 @@ mod vox {
                         (model.model.size.y / 2) as _,
                         (model.model.size.z / 2) as _,
                     );
-                    tc.set_voxel(
-                        chunk_pos + voxel_pos,
-                        voxel.i,
-                    ).expect("invalid index");
+                    tc.set_voxel(chunk_pos + voxel_pos, voxel.i)
+                        .expect("invalid index");
                 }
             }
 

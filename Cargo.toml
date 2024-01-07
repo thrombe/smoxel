@@ -13,6 +13,7 @@ block-mesh = "0.2.0"
 dot_vox = "5.1.1"
 futures-lite = "2.1.0"
 noise = "0.8.2"
+rand = "0.8.5"
 
 [features]
 dev = [ "bevy-inspector-egui" ]
