@@ -580,6 +580,52 @@ mod chunk {
     }
 
     impl ByteChunk {
+        #[allow(clippy::identity_op)]
+        pub fn mip1_bytechunk(&self) -> Self {
+            assert_eq!(self.side%2, 0, "side should be divisible by 2");
+            let new_side = self.side/2;
+            let mut bc = Self {
+                voxels: vec![0; new_side.pow(3)],
+                side: new_side,
+            };
+            let voxel = |z, y, x| self.voxels[z * self.side.pow(2) + y * self.side + x];
+
+            for z in 0..new_side {
+                for y in 0..new_side {
+                    for x in 0..new_side {
+                        let mut voxels = [(0u8, 0u8); 8];
+                        let samples = [
+                            voxel(z*2 + 0, y*2 + 0, x*2 + 0),
+                            voxel(z*2 + 0, y*2 + 0, x*2 + 1),
+                            voxel(z*2 + 0, y*2 + 1, x*2 + 0),
+                            voxel(z*2 + 0, y*2 + 1, x*2 + 1),
+                            voxel(z*2 + 1, y*2 + 0, x*2 + 0),
+                            voxel(z*2 + 1, y*2 + 0, x*2 + 1),
+                            voxel(z*2 + 1, y*2 + 1, x*2 + 0),
+                            voxel(z*2 + 1, y*2 + 1, x*2 + 1),
+                        ];
+                        for sample in samples {
+                            for i in 0..8 {
+                                if voxels[i].0 == 0 {
+                                    voxels[i] = (sample, 1);
+                                    break;
+                                } else if voxels[i].0 == sample {
+                                    voxels[i].1 += 1;
+                                    if voxels[i].1 > voxels[0].1 {
+                                        voxels.swap(0, i);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        bc.voxels[bc.side.pow(2) * z + bc.side * y + x] = voxels[0].0;
+                    }
+                }
+            }
+
+            bc
+        }
+
         // chunk side should be a multiple of 4
         // 1 byte stores 2x2x2 voxels each a single bit
         // 1 vec2<u32> stores 2x2x2 bytes, so 4x4x4 voxels
@@ -1359,6 +1405,7 @@ mod vox {
         // dbg!(models);
 
         let side = DEFAULT_CHUNK_SIDE as usize;
+        // let side = 256;
         let size = 16.0;
         let tc = parser.tiled_chunker(side);
         let material_handle = images.add(Chunk::material_image(parser.get_materials()));
@@ -1367,6 +1414,11 @@ mod vox {
             let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
             let chunk_pos = chunk_pos * size * 2.0;
             // + tc.chunk_side as f32 / 2.0;
+
+            // let chunk = chunk.mip1_bytechunk();
+            // let chunk = chunk.mip1_bytechunk();
+            // let chunk = chunk.mip1_bytechunk();
+            let side = chunk.side;
 
             let mip1 = chunk.mip();
             let mip2 = mip1.mip();
