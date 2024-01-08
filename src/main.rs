@@ -687,12 +687,17 @@ mod chunk {
                     | voxel(z + 2, y + 2, x + 2) << 0b111
             };
             let chunk1 = |z, y, x| {
-                000 | byte(z * 4 + 0, y * 4 + 0, x * 4 + 0) << (0b000 * 8)
-                    | byte(z * 4 + 0, y * 4 + 0, x * 4 + 4) << (0b001 * 8)
-                    | byte(z * 4 + 0, y * 4 + 4, x * 4 + 0) << (0b010 * 8)
-                    | byte(z * 4 + 0, y * 4 + 4, x * 4 + 4) << (0b011 * 8)
+                000 | byte(z * 8 + 0, y * 8 + 0, x * 8 + 0) << (0b000 * 8)
+                    | byte(z * 8 + 0, y * 8 + 0, x * 8 + 4) << (0b001 * 8)
+                    | byte(z * 8 + 0, y * 8 + 4, x * 8 + 0) << (0b010 * 8)
+                    | byte(z * 8 + 0, y * 8 + 4, x * 8 + 4) << (0b011 * 8)
             };
-            let chunk2 = |z, y, x| chunk1(z + 1, y, x);
+            let chunk2 = |z, y, x| {
+                000 | byte(z * 8 + 4, y * 8 + 0, x * 8 + 0) << (0b000 * 8)
+                    | byte(z * 8 + 4, y * 8 + 0, x * 8 + 4) << (0b001 * 8)
+                    | byte(z * 8 + 4, y * 8 + 4, x * 8 + 0) << (0b010 * 8)
+                    | byte(z * 8 + 4, y * 8 + 4, x * 8 + 4) << (0b011 * 8)
+            };
 
             let mut mip = vec![UVec2::ZERO; new_side.pow(3)];
             for z in 0..new_side {
