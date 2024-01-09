@@ -269,11 +269,12 @@ struct MipResult {
     hit: bool,
 }
 
-fn inline_mip2_loop(o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
+fn inline_mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
 
+    var o = _o + ray_dir * 0.001;
     // current voxel position (offset to center of the voxel)
     var march = floor(o) + 0.5;
     var marchi = vec3<i32>(march);
@@ -353,11 +354,12 @@ fn inline_mip2_loop(o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
     return res;
 }
 
-fn mip5_loop_final(o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
+fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
 
+    var o = _o + ray_dir * 0.001;
     // current voxel position (offset to center of the voxel)
     var march = floor(o) + 0.5;
     var marchi = vec3<i32>(march);
@@ -458,11 +460,12 @@ fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     return res;
 }
 
-fn mip2_loop_final(o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
+fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
 
+    var o = _o + ray_dir * 0.001;
     // current voxel position (offset to center of the voxel)
     var march = floor(o) + 0.5;
     var marchi = vec3<i32>(march);
