@@ -256,6 +256,7 @@ fn fragment(
     var res = mip5_loop_final(o, ray_dir, step, stepi, dt);
     // var res = mip2_loop_final(o, ray_dir, step, stepi, dt);
     // var res = inline_mip2_loop(o, ray_dir, step, stepi, dt);
+    // var res = inline_no_mip_loop(o, ray_dir, step, dt);
 
     if res.hit {
         return res.color;
@@ -267,6 +268,36 @@ fn fragment(
 struct MipResult {
     color: vec4<f32>,
     hit: bool,
+}
+
+fn inline_no_mip_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, dt: vec3<f32>) -> MipResult {
+    var res: MipResult;
+    res.hit = false;
+    res.color = vec4(0.0);
+
+    var o = _o + ray_dir * 0.001;
+
+    // how much t untill we hit a plane along this axis
+    var t = (step * 0.5 + 0.5 - fract(o) * step) * dt;
+    // current voxel position (offset to center of the voxel)
+    var march = floor(o) + 0.5;
+
+    var voxel: u32;
+    var mask: vec3<f32>;
+    for (var i = 0u; i < side * 3u - 2u; i += 1u) {
+        voxel = get_voxel(march);
+        if (voxel != 0u) {
+            res.color = get_color(voxel);
+            res.hit = true;
+            return res;
+        }
+
+        mask = vec3<f32>(t.xyz <= min(t.yzx, t.zxy));
+        t += mask * dt;
+        march += mask * step;
+    }
+
+    return res;
 }
 
 fn inline_mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
@@ -350,7 +381,6 @@ fn inline_mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: v
         marchi += maski * stepi * 4;
     }
 
-    // discard;
     return res;
 }
 
@@ -367,7 +397,7 @@ fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
     // how much t untill we hit a plane along this axis
     var t = (step * (0.5 - fract(o/32.0)) + 0.5) * dt * 32.0;
     var last_t = 0.0;
-    for (var i1 = 0u; i1 < (side / 32u) * 3u - 2u; i1 += 1u) {
+    for (var i = 0u; i < (side / 32u) * 3u - 2u; i += 1u) {
         if any(marchi > i32(side) || marchi < 0) {
             break;
         }
@@ -386,7 +416,6 @@ fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
         marchi += maski * stepi * 32;
     }
     
-    // discard;
     return res;
 }
 
@@ -473,7 +502,7 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
     // how much t untill we hit a plane along this axis
     var t = (step * (0.5 - fract(o/4.0)) + 0.5) * dt * 4.0;
     var last_t = 0.0;
-    for (var i1 = 0u; i1 < (side / 4u) * 3u - 2u; i1 += 1u) {
+    for (var i = 0u; i < (side / 4u) * 3u - 2u; i += 1u) {
         if any(marchi > i32(side) || marchi < 0) {
             break;
         }
@@ -492,7 +521,6 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
         marchi += maski * stepi * 4;
     }
     
-    // discard;
     return res;
 }
 
@@ -507,7 +535,7 @@ fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     var t = (step * (0.5 - fract(o/4.0)) + 0.5) * dt * 4.0;
     var mod8 = marchi % 8;
     var last_t = 0.0;
-    for (var i1 = 0u; i1 < 4u; i1 += 1u) {
+    for (var i = 0; i < 4; i += 1) {
         if (any(mod8 >= 8 || mod8 < 0)) {
             break;
         }
@@ -541,7 +569,7 @@ fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     var t = (step * (0.5 - fract(o/2.0)) + 0.5) * dt * 2.0;
     var mod4 = marchi % 4;
     var last_t = 0.0;
-    for (var i = 0u; i < 4u; i += 1u) {
+    for (var i = 0; i < 4; i += 1) {
         if (any(mod4 >= 4 || mod4 < 0)) {
             break;
         }
