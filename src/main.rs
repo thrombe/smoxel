@@ -582,8 +582,8 @@ mod chunk {
     impl ByteChunk {
         #[allow(clippy::identity_op)]
         pub fn mip1_bytechunk(&self) -> Self {
-            assert_eq!(self.side%2, 0, "side should be divisible by 2");
-            let new_side = self.side/2;
+            assert_eq!(self.side % 2, 0, "side should be divisible by 2");
+            let new_side = self.side / 2;
             let mut bc = Self {
                 voxels: vec![0; new_side.pow(3)],
                 side: new_side,
@@ -595,14 +595,14 @@ mod chunk {
                     for x in 0..new_side {
                         let mut voxels = [(0u8, 0u8); 8];
                         let samples = [
-                            voxel(z*2 + 0, y*2 + 0, x*2 + 0),
-                            voxel(z*2 + 0, y*2 + 0, x*2 + 1),
-                            voxel(z*2 + 0, y*2 + 1, x*2 + 0),
-                            voxel(z*2 + 0, y*2 + 1, x*2 + 1),
-                            voxel(z*2 + 1, y*2 + 0, x*2 + 0),
-                            voxel(z*2 + 1, y*2 + 0, x*2 + 1),
-                            voxel(z*2 + 1, y*2 + 1, x*2 + 0),
-                            voxel(z*2 + 1, y*2 + 1, x*2 + 1),
+                            voxel(z * 2 + 0, y * 2 + 0, x * 2 + 0),
+                            voxel(z * 2 + 0, y * 2 + 0, x * 2 + 1),
+                            voxel(z * 2 + 0, y * 2 + 1, x * 2 + 0),
+                            voxel(z * 2 + 0, y * 2 + 1, x * 2 + 1),
+                            voxel(z * 2 + 1, y * 2 + 0, x * 2 + 0),
+                            voxel(z * 2 + 1, y * 2 + 0, x * 2 + 1),
+                            voxel(z * 2 + 1, y * 2 + 1, x * 2 + 0),
+                            voxel(z * 2 + 1, y * 2 + 1, x * 2 + 1),
                         ];
                         for sample in samples {
                             for i in 0..8 {
@@ -2019,20 +2019,20 @@ fn setup(
     // });
 
     // light
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
-            intensity: 1500.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        transform: Transform::from_xyz(4.0, 8.0, 4.0),
-        ..default()
-    });
+    // commands.spawn(PointLightBundle {
+    //     point_light: PointLight {
+    //         intensity: 1500.0,
+    //         shadows_enabled: true,
+    //         ..default()
+    //     },
+    //     transform: Transform::from_xyz(4.0, 8.0, 4.0),
+    //     ..default()
+    // });
 
-    let style = TextStyle {
-        font_size: 18.0,
-        ..default()
-    };
+    // let style = TextStyle {
+    //     font_size: 18.0,
+    //     ..default()
+    // };
 
     // commands.spawn(
     //     TextBundle::from_sections(vec![
