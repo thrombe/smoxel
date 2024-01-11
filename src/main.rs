@@ -78,6 +78,7 @@ fn main() {
         ]),
     ))
     .add_plugins(WireframePlugin)
+    .add_plugins(render::RenderPlugin)
     .add_plugins(player::Player)
     .add_plugins(spectator::Spectator)
     .add_plugins(chunk::VoxelPlugin)
@@ -135,6 +136,549 @@ enum ControlsState {
     #[default]
     Player,
     Spectator,
+}
+
+mod render {
+    use bevy::{
+        app::{Plugin, Startup},
+        asset::{AssetServer, Assets, Handle, load_internal_asset},
+        core_pipeline::{
+            clear_color::ClearColorConfig,
+            core_3d::{
+                graph::input::VIEW_ENTITY, Camera3d, Camera3dBundle, Transparent3d, CORE_3D,
+            },
+            tonemapping::Tonemapping,
+        },
+        ecs::{
+            bundle::Bundle,
+            component::Component,
+            entity::Entity,
+            query::{ROQueryItem, With},
+            schedule::{IntoSystemConfigs, State, States, NextState, OnEnter},
+            system::{
+                lifetimeless::{Read, SQuery, SRes},
+                Commands, Query, Res, ResMut, Resource, RunSystemOnce, SystemParamItem,
+            },
+            world::FromWorld,
+        },
+        pbr::{
+            DrawMesh, MeshPipeline, MeshPipelineKey, MeshPipelineViewLayoutKey, MeshTransforms,
+            SetMeshBindGroup, SetMeshViewBindGroup, MaterialMeshBundle, RenderMeshInstances, RenderMeshInstance, MaterialBindGroupId, MeshFlags,
+        },
+        render::{
+            camera::{Camera, CameraRenderGraph, Projection, RenderTarget, OrthographicProjection, ScalingMode},
+            main_graph::node::CAMERA_DRIVER,
+            mesh::{Mesh, MeshVertexBufferLayout, shape::{Cube, UVSphere}, GpuBufferInfo},
+            primitives::{Frustum, Sphere},
+            render_asset::RenderAssets,
+            render_graph::{RenderGraph, SlotInfo, SlotType},
+            render_phase::{
+                AddRenderCommand, DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult,
+                RenderPhase, SetItemPipeline, TrackedRenderPass,
+            },
+            render_resource::{
+                AsBindGroup, BindGroup, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
+                BindGroupLayoutEntry, BindingResource,
+                BindingType::{self, StorageTexture},
+                BufferBindingType, Extent3d, PipelineCache, PrimitiveTopology,
+                RenderPipelineDescriptor, Shader, ShaderStages, SpecializedMeshPipeline,
+                SpecializedMeshPipelineError, SpecializedMeshPipelines, StorageTextureAccess,
+                Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+                TextureView, TextureViewDescriptor, TextureViewDimension,
+            },
+            renderer::{RenderDevice, RenderQueue},
+            texture::Image,
+            view::{ExtractedView, VisibleEntities, Visibility, InheritedVisibility, ViewVisibility, NoFrustumCulling},
+            Render, RenderApp, RenderSet, extract_component::{ExtractComponentPlugin, ExtractComponent}, extract_resource::{ExtractResource, ExtractResourcePlugin}, ExtractSchedule, Extract,
+        },
+        transform::components::{GlobalTransform, Transform}, core::Name, math::Vec3,
+    };
+
+    pub struct RenderPlugin;
+
+    impl Plugin for RenderPlugin {
+        fn build(&self, app: &mut bevy::prelude::App) {
+            app.add_plugins(WorldPlugin).add_plugins(VoxelizationPlugin);
+            app.add_systems(Startup, test_plugin);
+        }
+
+        fn finish(&self, app: &mut bevy::prelude::App) {
+            // let mut smox_graph = RenderGraph::default();
+
+            // let input_node_id =
+            //     smox_graph.set_input(vec![SlotInfo::new(VIEW_ENTITY, SlotType::Entity)]);
+
+            // render_graph.add_node_edge(input_node_id, CAMERA_DRIVER);
+
+            // let mut render_graph = render_app.world.resource_mut::<RenderGraph>();
+            // smox_graph.add_slot_edge(input_node_id, VIEW_ENTITY, CAMERA_DRIVER, "view");
+            // smox_graph.add_node(CAMERA_DRIVER, CAMERA_DRIVER);
+
+            // render_graph.add_sub_graph("smox", smox_graph);
+        }
+    }
+
+    fn test_plugin(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>) {
+        commands.spawn((
+            Name::new("voxelization test mesh"),
+            VoxelizeBundle {
+                mesh: meshes.add(Mesh::from(UVSphere::default())),
+                transform: Transform::from_translation(Vec3::ZERO),
+                ..Default::default()
+            },
+        ));
+    }
+
+    #[derive(Bundle)]
+    pub struct VoxCamBundle {
+        pub camera_render_graph: CameraRenderGraph,
+        pub camera: Camera,
+        pub camera_3d: Camera3d,
+        pub projection: Projection,
+        pub visible_entities: VisibleEntities,
+        pub frustun: Frustum,
+        pub global_transform: GlobalTransform,
+        pub transform: Transform,
+        pub tonemapping: Tonemapping,
+    }
+    impl Default for VoxCamBundle {
+        fn default() -> Self {
+            Self {
+                camera_render_graph: CameraRenderGraph::new(CORE_3D),
+                // camera_render_graph: CameraRenderGraph::new("smox"),
+                tonemapping: Tonemapping::default(), // TODO: look into this
+                camera: Default::default(),
+                camera_3d: Default::default(),
+                projection: Default::default(),
+                visible_entities: Default::default(),
+                frustun: Default::default(),
+                global_transform: Default::default(),
+                transform: Default::default(),
+            }
+        }
+    }
+
+    struct WorldPlugin;
+    impl Plugin for WorldPlugin {
+        fn build(&self, app: &mut bevy::prelude::App) {
+        }
+
+        fn finish(&self, app: &mut bevy::prelude::App) {
+            let render_device = app.world.resource::<RenderDevice>();
+            let render_queue = app.world.resource::<RenderQueue>();
+
+            let transient_world_size = Extent3d {
+                width: 100,
+                height: 100,
+                depth_or_array_layers: 100,
+            };
+            let transient_world_texture = render_device.create_texture_with_data(
+                render_queue,
+                &TextureDescriptor {
+                    label: Some("transient world texture"),
+                    size: transient_world_size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D3,
+                    format: TextureFormat::R8Uint,
+                    usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                &[0; 100usize.pow(3)],
+            );
+            let transient_world_texture_view =
+                transient_world_texture.create_view(&TextureViewDescriptor::default());
+
+            // TODO: can use AsBindGroup to generate this boilerplate
+            let world_data_bind_group_layout =
+                render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                    label: Some("world data bind group"),
+                    entries: &[BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                        ty: BindingType::StorageTexture {
+                            access: StorageTextureAccess::ReadWrite,
+                            format: TextureFormat::R8Uint,
+                            view_dimension: TextureViewDimension::D3,
+                        },
+                        count: None,
+                    }],
+                });
+            let world_data_bind_group = render_device.create_bind_group(
+                None,
+                &world_data_bind_group_layout,
+                &[BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&transient_world_texture_view),
+                }],
+            );
+
+            // NOTE: i am assuming we need to have this image just so that we can reuse the rendering pipeline for
+            // voxelization. and we don't actually need this image's output. the real output will be done directly
+            // the 3d world texture
+            let transient_world_camera_target_image = Image {
+                texture_descriptor: TextureDescriptor {
+                    label: Some("transient world camera target"),
+                    size: Extent3d {
+                        depth_or_array_layers: 1,
+                        ..transient_world_size
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D2,
+                    format: TextureFormat::R8Unorm,
+                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[TextureFormat::R8Unorm],
+                },
+                data: vec![0; 100usize.pow(2)],
+                ..Default::default()
+            };
+            let mut images = app.world.resource_mut::<Assets<Image>>();
+            let transient_world_camera_target = images.add(transient_world_camera_target_image);
+
+            app.add_plugins(ExtractResourcePlugin::<WorldData>::default());
+            let world_data = WorldData {
+                bind_group_layout: world_data_bind_group_layout,
+                bind_group: world_data_bind_group,
+                transient_world_texture,
+                transient_world_texture_view,
+                transient_world_camera_target,
+            };
+            let wd2 = WorldData::extract_resource(&world_data);
+            app.insert_resource(world_data);
+            let render_app = app.sub_app_mut(RenderApp);
+            render_app.insert_resource(wd2);
+            render_app.add_systems(ExtractSchedule, extract_meshes);
+        }
+    }
+
+    fn extract_meshes(mut commands: Commands, mut instances: ResMut<RenderMeshInstances>, meshes: Extract<Query<(Entity, &Voxelize, &Handle<Mesh>, &GlobalTransform)>>) {
+        for (e, v, h, t) in meshes.iter() {
+            commands.spawn((
+                Voxelize,
+                h.clone_weak(),
+                t.clone(),
+            ));
+            let mut flags = MeshFlags::empty();
+            if t.affine().matrix3.determinant().is_sign_positive() {
+                flags |= MeshFlags::SIGN_DETERMINANT_MODEL_3X3;
+            }
+            instances.extend([(e, RenderMeshInstance {
+                transforms: MeshTransforms { transform: (&t.affine()).into(), previous_transform: (&t.affine()).into(), flags: flags.bits() },
+                mesh_asset_id: h.id(),
+                material_bind_group_id: MaterialBindGroupId::default(),
+                shadow_caster: false,
+                automatic_batching: false,
+            })]);
+        }
+    }
+
+    #[derive(Resource, Clone, ExtractResource)]
+    struct WorldData {
+        bind_group_layout: BindGroupLayout,
+        bind_group: BindGroup,
+
+        transient_world_texture: Texture,
+        transient_world_texture_view: TextureView,
+        transient_world_camera_target: Handle<Image>,
+    }
+
+    #[derive(Component)]
+    struct VoxelizationCam;
+
+    // slap this on meshes you want voxelized into the transient world
+    #[derive(Component, Default, Clone, ExtractComponent)]
+    struct Voxelize;
+
+    #[derive(Bundle, Default)]
+    pub struct VoxelizeBundle {
+        mesh: Handle<Mesh>,
+        transform: Transform,
+        global_transform: GlobalTransform,
+        visibility: Visibility,
+        inherited_visibility: InheritedVisibility,
+        voxelize: Voxelize,
+        view_vis: ViewVisibility,
+        nocull: NoFrustumCulling,
+    }
+
+    const VOXELIZATION_SHADER_HANDLE: Handle<Shader> =
+        Handle::weak_from_u128(1975691635883203525);
+    struct VoxelizationPlugin;
+    impl Plugin for VoxelizationPlugin {
+        fn build(&self, app: &mut bevy::prelude::App) {
+            load_internal_asset!(
+                app,
+                VOXELIZATION_SHADER_HANDLE,
+                "../assets/shaders/voxelize.wgsl",
+                Shader::from_wgsl
+            );
+
+            app.add_systems(Startup, setup_cameras);
+        }
+        fn finish(&self, app: &mut bevy::prelude::App) {
+            let render_app = app.sub_app_mut(RenderApp);
+            render_app
+                .add_render_command::<Transparent3d, CustomDraw>()
+                .init_resource::<VoxelizationPipeline>()
+                .init_resource::<SpecializedMeshPipelines<VoxelizationPipeline>>();
+            render_app.add_systems(
+                Render,
+                queue_for_voxelization.in_set(RenderSet::QueueMeshes),
+            );
+        }
+    }
+
+    fn setup_cameras(mut commands: Commands, world_data: Res<WorldData>) {
+        // 16 voxels per unit
+        let side = (100.0 / 16.0)/2.0;
+
+        let transform = Transform::from_translation(Vec3::ZERO);
+        for i in -3..0 {
+            let transform = match i {
+                -3 => transform.looking_to(Vec3::X, Vec3::Y),
+                -2 => transform.looking_to(Vec3::Y, Vec3::Z),
+                -1 => transform.looking_to(Vec3::Z, Vec3::Y),
+                _ => unreachable!(),
+            };
+            commands.spawn((
+                // TODO: look into using a different CameraRenderGraph for voxelization
+                Camera3dBundle {
+                    camera: Camera {
+                        order: i,
+                        target: RenderTarget::Image(world_data.transient_world_camera_target.clone()),
+                        ..Default::default()
+                    },
+                    camera_3d: Camera3d {
+                        clear_color: ClearColorConfig::None,
+                        ..Default::default()
+                    },
+                    projection: Projection::Orthographic(OrthographicProjection {
+                        near: -side,
+                        far: side,
+                        scaling_mode: ScalingMode::Fixed {
+                            width: 2.0*side,
+                            height: 2.0*side,
+                        },
+                        ..Default::default()
+                    }),
+                    transform,
+                    ..Default::default()
+                },
+                VoxelizationCam,
+                Name::new("voxelization cam"),
+            ));
+        }
+    }
+
+    // https://github.com/bevyengine/bevy/blob/22e39c4abf6e2fdf99ba0820b3c35db73be71347/examples/2d/mesh2d_manual.rs#L338
+    #[allow(clippy::too_many_arguments)]
+    fn queue_for_voxelization(
+        transparent_draw_functions: Res<DrawFunctions<Transparent3d>>,
+        pipeline: Res<VoxelizationPipeline>,
+        mut pipelines: ResMut<SpecializedMeshPipelines<VoxelizationPipeline>>,
+        pipeline_cache: Res<PipelineCache>,
+        render_meshes: Res<RenderAssets<Mesh>>,
+        mesh_query: Query<(Entity, &GlobalTransform, &Handle<Mesh>), With<Voxelize>>,
+        mut test_query: Query<(Entity, &Handle<Mesh>)>,
+        mut views: Query<(&mut RenderPhase<Transparent3d>, &ExtractedView)>,
+    ) {
+        for e in test_query.iter() {
+            // dbg!(e);
+        }
+
+        let draw_function = transparent_draw_functions
+            .read()
+            .get_id::<CustomDraw>()
+            .unwrap();
+        let key = MeshPipelineKey::from_primitive_topology(PrimitiveTopology::TriangleList);
+
+        // a camera is a view
+        for (mut phase, view) in views.iter_mut() {
+            let rangefinder = view.rangefinder3d();
+            for (entity, transforms, mesh_handle) in mesh_query.iter() {
+                let Some(mesh) = render_meshes.get(mesh_handle) else {
+                    continue;
+                };
+                // dbg!(entity, rangefinder.distance_translation(&transforms.translation()));
+
+                let pipeline = pipelines
+                    .specialize(&pipeline_cache, &pipeline, key, &mesh.layout)
+                    .unwrap();
+                phase.add(Transparent3d {
+                    entity,
+                    pipeline,
+                    distance: rangefinder.distance_translation(&transforms.translation()),
+                    draw_function,
+                    batch_range: 0..1,
+                    dynamic_offset: None,
+                });
+            }
+        }
+    }
+
+    #[derive(Resource)]
+    struct VoxelizationPipeline {
+        vertex_shader: Handle<Shader>,
+        fragment_shader: Handle<Shader>,
+        mesh_pipeline: MeshPipeline,
+        world_bind_group_layout: BindGroupLayout,
+        // voxelization_bind_group_layout: BindGroupLayout,
+    }
+    impl FromWorld for VoxelizationPipeline {
+        fn from_world(world: &mut bevy::prelude::World) -> Self {
+            let asset_server = world.resource::<AssetServer>();
+            // let render_device = world.resource::<RenderDevice>();
+            let world_data = world.resource::<WorldData>();
+            Self {
+                mesh_pipeline: world.resource::<MeshPipeline>().clone(),
+                vertex_shader: asset_server.load("shaders/voxelize.wgsl"),
+                fragment_shader: asset_server.load("shaders/voxelize.wgsl"),
+                world_bind_group_layout: world_data.bind_group_layout.clone(),
+                // voxelization_bind_group_layout: render_device.create_bind_group_layout(
+                //     &BindGroupLayoutDescriptor {
+                //         label: None,
+                //         entries: &[],
+                //     },
+                // ),
+            }
+        }
+    }
+    impl SpecializedMeshPipeline for VoxelizationPipeline {
+        type Key = MeshPipelineKey;
+
+        fn specialize(
+            &self,
+            key: Self::Key,
+            layout: &MeshVertexBufferLayout,
+        ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+            let mut desc = self.mesh_pipeline.specialize(key, layout)?;
+            desc.vertex.shader = self.vertex_shader.clone();
+            desc.fragment.as_mut().unwrap().shader = self.fragment_shader.clone();
+            // desc.vertex.shader = VOXELIZATION_SHADER_HANDLE;
+            // desc.fragment.as_mut().unwrap().shader = VOXELIZATION_SHADER_HANDLE;
+            desc.layout = vec![
+                self.mesh_pipeline
+                    .get_view_layout(MeshPipelineViewLayoutKey::NORMAL_PREPASS)
+                    .clone(),
+                self.mesh_pipeline.mesh_layouts.morphed_skinned.clone(),
+                self.world_bind_group_layout.clone(),
+                // self.voxelization_bind_group_layout.clone(),
+            ];
+            desc.primitive.cull_mode = None;
+            Ok(desc)
+        }
+    }
+
+    type CustomDraw = (
+        SetItemPipeline,
+        SetMeshViewBindGroup<0>,
+        SetMeshBindGroup<1>,
+        SetWorldBindGroup<2>,
+        // SetVoxelizationBindGroup<3>,
+        // DrawMesh,
+        DrawMeAMesh,
+    );
+    pub struct DrawMeAMesh;
+    impl<P: PhaseItem> RenderCommand<P> for DrawMeAMesh {
+        type Param = (SRes<RenderAssets<Mesh>>, SRes<RenderMeshInstances>);
+        type ViewWorldQuery = ();
+        type ItemWorldQuery = ();
+        #[inline]
+        fn render<'w>(
+            item: &P,
+            _view: (),
+            _item_query: (),
+            (meshes, mesh_instances): SystemParamItem<'w, '_, Self::Param>,
+            pass: &mut TrackedRenderPass<'w>,
+        ) -> RenderCommandResult {
+            let meshes = meshes.into_inner();
+            let mesh_instances = mesh_instances.into_inner();
+
+            dbg!();
+            let Some(mesh_instance) = mesh_instances.get(&item.entity()) else {
+                return RenderCommandResult::Failure;
+            };
+            dbg!();
+            let Some(gpu_mesh) = meshes.get(mesh_instance.mesh_asset_id) else {
+                return RenderCommandResult::Failure;
+            };
+
+            pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+
+            let batch_range = item.batch_range();
+            dbg!(&batch_range);
+            match &gpu_mesh.buffer_info {
+                GpuBufferInfo::Indexed {
+                    buffer,
+                    index_format,
+                    count,
+                } => {
+                    dbg!();
+                    pass.set_index_buffer(buffer.slice(..), 0, *index_format);
+                    pass.draw_indexed(0..*count, 0, batch_range.clone());
+                }
+                GpuBufferInfo::NonIndexed => {
+                    dbg!();
+                    pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
+                }
+            }
+            RenderCommandResult::Success
+        }
+    }
+    // we only have 1 world, so we use a resource
+    // and set bind group for this one world
+    struct SetWorldBindGroup<const I: usize>;
+    impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetWorldBindGroup<I> {
+        type Param = SRes<WorldData>;
+
+        type ViewWorldQuery = ();
+
+        type ItemWorldQuery = ();
+
+        fn render<'w>(
+            item: &P,
+            view: ROQueryItem<'w, Self::ViewWorldQuery>,
+            entity: ROQueryItem<'w, Self::ItemWorldQuery>,
+            param: SystemParamItem<'w, '_, Self::Param>,
+            pass: &mut TrackedRenderPass<'w>,
+        ) -> RenderCommandResult {
+            let world = param.into_inner();
+
+            pass.set_bind_group(I, &world.bind_group, &[]);
+
+            RenderCommandResult::Success
+        }
+    }
+
+    // // we might have many things we want to voxelize, so we use a component
+    // // we set this bind group when rendering any object with this component
+    // #[derive(Component)]
+    // struct VoxelizationBindGroup(BindGroup);
+    // struct SetVoxelizationBindGroup<const I: usize>;
+    // // execute this render command for ever item P with VoxelizationBindGroup component
+    // impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetVoxelizationBindGroup<I> {
+    //     type Param = SQuery<Read<VoxelizationBindGroup>>;
+
+    //     type ViewWorldQuery = ();
+
+    //     type ItemWorldQuery = ();
+
+    //     fn render<'w>(
+    //         item: &P,
+    //         view: ROQueryItem<'w, Self::ViewWorldQuery>,
+    //         entity: ROQueryItem<'w, Self::ItemWorldQuery>,
+    //         param: SystemParamItem<'w, '_, Self::Param>,
+    //         pass: &mut TrackedRenderPass<'w>,
+    //     ) -> RenderCommandResult {
+    //         // TODO: find out what this 'inner' stuff is
+    //         let vox_bind_group = param.get_inner(item.entity()).unwrap();
+
+    //         pass.set_bind_group(I, &vox_bind_group.0, &[]);
+
+    //         RenderCommandResult::Success
+    //     }
+    // }
 }
 
 mod chunk {
@@ -1643,6 +2187,8 @@ mod vox {
 }
 
 mod player {
+    use crate::render::VoxCamBundle;
+
     use super::*;
 
     #[derive(Component)]
@@ -1659,7 +2205,7 @@ mod player {
     fn setup(mut commands: Commands, mut _meshes: ResMut<Assets<Mesh>>) {
         let transform = Transform::from_xyz(5.0, 5.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y);
         commands.spawn((
-            Camera3dBundle {
+            VoxCamBundle {
                 transform,
                 ..default()
             },
