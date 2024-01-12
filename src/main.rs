@@ -887,16 +887,16 @@ mod chunk {
         commands.insert_resource(world);
         game_state.set(AppState::Playing);
 
-        commands.spawn(DirectionalLightBundle {
-            directional_light: DirectionalLight {
-                illuminance: 3000.0,
-                shadows_enabled: true,
-                ..Default::default()
-            },
-            transform: Transform::from_xyz(1.0, 1.0, 1.0)
-                .with_rotation(Quat::from_axis_angle(Vec3::X, 3.5)),
-            ..Default::default()
-        });
+        // commands.spawn(DirectionalLightBundle {
+        //     directional_light: DirectionalLight {
+        //         illuminance: 3000.0,
+        //         shadows_enabled: true,
+        //         ..Default::default()
+        //     },
+        //     transform: Transform::from_xyz(1.0, 1.0, 1.0)
+        //         .with_rotation(Quat::from_axis_angle(Vec3::X, 3.5)),
+        //     ..Default::default()
+        // });
         // commands.spawn((
         //     SparseVoxelOctree::root(),
         //     TransformBundle::default(),
@@ -1979,19 +1979,19 @@ fn setup(
     // ));
 
     // Opaque cube
-    commands.spawn((
-        MaterialMeshBundle {
-            mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
-            material: materials.add(CustomMaterial {
-                color: Color::WHITE,
-                color_texture: None,
-                alpha_mode: AlphaMode::Opaque,
-            }),
-            transform: Transform::from_xyz(-1.0, 0.5, 0.0),
-            ..default()
-        },
-        Rotates,
-    ));
+    // commands.spawn((
+    //     MaterialMeshBundle {
+    //         mesh: meshes.add(Mesh::from(shape::Cube { size: 1.0 })),
+    //         material: materials.add(CustomMaterial {
+    //             color: Color::WHITE,
+    //             color_texture: None,
+    //             alpha_mode: AlphaMode::Opaque,
+    //         }),
+    //         transform: Transform::from_xyz(-1.0, 0.5, 0.0),
+    //         ..default()
+    //     },
+    //     Rotates,
+    // ));
 
     // // Cube with alpha mask
     // commands.spawn(PbrBundle {
