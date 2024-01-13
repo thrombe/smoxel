@@ -9,8 +9,12 @@
 @group(1) @binding(8) var voxels_mip2: texture_3d<u32>;
 @group(1) @binding(2) var materials: texture_1d<f32>;
 
-@group(1) @binding(3) var<uniform> pos: vec3<f32>;
-@group(1) @binding(4) var<uniform> resolution: vec2<f32>;
+struct WorldDataUniforms {
+    player_pos: vec3<f32>,
+    screen_resolution: vec2<u32>,
+}
+
+@group(3) @binding(0) var<uniform> world_data: WorldDataUniforms;
 
 // returns voxel material in the rightmost byte
 fn get_voxel(pos: vec3<f32>) -> u32 {
@@ -235,8 +239,8 @@ fn fragment(
         // return vec4<f32>((mesh.world_position.xyz - chunk_pos)/1000.0, 1.0);
         // return vec4<f32>(mesh.uv, 1.0, 1.0);
     }
-    let screen_uv = mesh.position.xy/resolution.xy;
-    let ray_origin = pos.xyz;
+    let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
+    let ray_origin = world_data.player_pos.xyz;
     let ray_dir = normalize(mesh.world_position.xyz - ray_origin);
     let voxel_size = chunk_size * 2.0 / f32(side);
     let chunk_center = chunk_pos;

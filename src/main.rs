@@ -1,7 +1,3 @@
-//! Bevy has an optional prepass that is controlled per-material. A prepass is a rendering pass that runs before the main pass.
-//! It will optionally generate various view textures. Currently it supports depth, normal, and motion vector textures.
-//! The textures are not generated for any material using alpha blending.
-
 use bevy::{
     core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass},
     diagnostic::{DiagnosticsPlugin, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
@@ -59,7 +55,7 @@ fn main() {
                 ..Default::default()
             }),
         MaterialPlugin::<CustomMaterial>::default(),
-        MaterialPlugin::<ChunkMaterial>::default(),
+        // MaterialPlugin::<ChunkMaterial>::default(),
         // MaterialPlugin::<PrepassOutputMaterial> {
         //     // This material only needs to read the prepass textures,
         //     // but the meshes using it should not contribute to the prepass render, so we can disable it.
@@ -78,7 +74,8 @@ fn main() {
         ]),
     ))
     .add_plugins(WireframePlugin)
-    .add_plugins(player::Player)
+    .add_plugins(render::RenderPlugin)
+    .add_plugins(player::PlayerPlugin)
     .add_plugins(spectator::Spectator)
     .add_plugins(chunk::VoxelPlugin)
     .add_plugins(vox::VoxLoader)
@@ -137,6 +134,896 @@ enum ControlsState {
     Spectator,
 }
 
+mod render {
+    use bevy::{
+        app::{Plugin, Startup},
+        asset::{load_internal_asset, AssetApp, AssetId, AssetServer, Assets, Handle, AssetEvent},
+        core::Name,
+        core_pipeline::{
+            clear_color::ClearColorConfig,
+            core_3d::{
+                graph::input::VIEW_ENTITY, AlphaMask3d, Camera3d, Camera3dBundle, Opaque3d,
+                ScreenSpaceTransmissionQuality, Transmissive3d, Transparent3d, CORE_3D,
+            },
+            prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass, NormalPrepass},
+            tonemapping::{DebandDither, Tonemapping},
+        },
+        ecs::{
+            bundle::Bundle,
+            component::Component,
+            entity::Entity,
+            query::{Has, ROQueryItem, With},
+            schedule::{IntoSystemConfigs, NextState, OnEnter, State, States},
+            system::{
+                lifetimeless::{Read, SQuery, SRes},
+                Commands, Local, Query, Res, ResMut, Resource, RunSystemOnce, SystemParamItem,
+            },
+            world::FromWorld, event::EventReader,
+        },
+        math::{UVec2, Vec2, Vec3},
+        pbr::{
+            AlphaMode, DrawMesh, EnvironmentMapLight, Material,
+            MaterialBindGroupId, MaterialMeshBundle, MaterialProperties, MeshFlags, MeshPipeline,
+            MeshPipelineKey, MeshPipelineViewLayoutKey, MeshTransforms, OpaqueRendererMethod,
+            PreparedMaterial, RenderMaterialInstances, RenderMaterials, RenderMeshInstance,
+            RenderMeshInstances, ScreenSpaceAmbientOcclusionSettings, SetMaterialBindGroup,
+            SetMeshBindGroup, SetMeshViewBindGroup, ShadowFilteringMethod,
+        },
+        reflect::Reflect,
+        render::{
+            camera::{
+                Camera, CameraRenderGraph, OrthographicProjection, Projection, RenderTarget,
+                ScalingMode, TemporalJitter,
+            },
+            extract_component::{ExtractComponent, ExtractComponentPlugin},
+            extract_instances::ExtractInstancesPlugin,
+            extract_resource::{ExtractResource, ExtractResourcePlugin},
+            main_graph::node::CAMERA_DRIVER,
+            mesh::{
+                shape::{Cube, UVSphere},
+                GpuBufferInfo, Mesh, MeshVertexBufferLayout,
+            },
+            primitives::{Frustum, Sphere},
+            render_asset::{prepare_assets, RenderAssets},
+            render_graph::{RenderGraph, SlotInfo, SlotType},
+            render_phase::{
+                AddRenderCommand, DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult,
+                RenderPhase, SetItemPipeline, TrackedRenderPass,
+            },
+            render_resource::{
+                AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntry, BindGroupLayout,
+                BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
+                BindingType::{self, StorageTexture},
+                BufferBindingType, BufferSize, Extent3d, PipelineCache, PrimitiveTopology,
+                RenderPipelineDescriptor, Shader, ShaderSize, ShaderStages, ShaderType,
+                SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
+                StorageTextureAccess, Texture, TextureDescriptor, TextureDimension, TextureFormat,
+                TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
+                UniformBuffer,
+            },
+            renderer::{RenderDevice, RenderQueue},
+            texture::{FallbackImage, Image},
+            view::{
+                ExtractedView, InheritedVisibility, Msaa, NoFrustumCulling, ViewVisibility,
+                Visibility, VisibleEntities,
+            },
+            Extract, ExtractSchedule, Render, RenderApp, RenderSet,
+        },
+        transform::components::{GlobalTransform, Transform},
+        window::Window, utils::HashSet,
+    };
+
+    use crate::{
+        chunk::ChunkMaterial,
+        player::{PlayerEntity, PlayerPlugin},
+    };
+
+    pub struct RenderPlugin;
+
+    impl Plugin for RenderPlugin {
+        fn build(&self, app: &mut bevy::prelude::App) {
+            app.add_plugins(WorldPlugin)
+                .add_plugins(ChunkMaterialPlugin);
+        }
+
+        fn finish(&self, app: &mut bevy::prelude::App) {}
+    }
+
+    struct WorldPlugin;
+    impl Plugin for WorldPlugin {
+        fn build(&self, app: &mut bevy::prelude::App) {}
+
+        fn finish(&self, app: &mut bevy::prelude::App) {
+            let render_device = app.world.resource::<RenderDevice>();
+            let render_queue = app.world.resource::<RenderQueue>();
+
+            let transient_world_size = Extent3d {
+                width: 100,
+                height: 100,
+                depth_or_array_layers: 100,
+            };
+            let transient_world_texture = render_device.create_texture_with_data(
+                render_queue,
+                &TextureDescriptor {
+                    label: Some("transient world texture"),
+                    size: transient_world_size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D3,
+                    format: TextureFormat::R8Uint,
+                    usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                &[0; 100usize.pow(3)],
+            );
+            let transient_world_texture_view =
+                transient_world_texture.create_view(&TextureViewDescriptor::default());
+
+            // TODO: can use AsBindGroup to generate this boilerplate
+            let world_data_bind_group_layout =
+                render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                    label: Some("world data bind group"),
+                    entries: &[
+                        BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                            ty: BindingType::Buffer {
+                                ty: BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: BufferSize::new(
+                                    WorldDataUniforms::SHADER_SIZE.into(),
+                                ),
+                            },
+                            count: None,
+                        },
+                        BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                            ty: BindingType::StorageTexture {
+                                access: StorageTextureAccess::ReadWrite,
+                                format: TextureFormat::R8Uint,
+                                view_dimension: TextureViewDimension::D3,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+
+            let mut uniforms = UniformBuffer::from(WorldDataUniforms::default());
+            uniforms.write_buffer(render_device, render_queue);
+
+            let world_data_bind_group = render_device.create_bind_group(
+                None,
+                &world_data_bind_group_layout,
+                &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: uniforms.binding().unwrap(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&transient_world_texture_view),
+                    },
+                ],
+            );
+
+            // NOTE: i am assuming we need to have this image just so that we can reuse the rendering pipeline for
+            // voxelization. and we don't actually need this image's output. the real output will be done directly
+            // the 3d world texture
+            let transient_world_camera_target_image = Image {
+                texture_descriptor: TextureDescriptor {
+                    label: Some("transient world camera target"),
+                    size: Extent3d {
+                        depth_or_array_layers: 1,
+                        ..transient_world_size
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D2,
+                    format: TextureFormat::R8Unorm,
+                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[TextureFormat::R8Unorm],
+                },
+                data: vec![0; 100usize.pow(2)],
+                ..Default::default()
+            };
+            let mut images = app.world.resource_mut::<Assets<Image>>();
+            let transient_world_camera_target = images.add(transient_world_camera_target_image);
+
+            let render_app = app.sub_app_mut(RenderApp);
+            render_app.insert_resource(WorldData {
+                bind_group_layout: world_data_bind_group_layout,
+                bind_group: world_data_bind_group,
+                transient_world_texture,
+                transient_world_texture_view,
+                transient_world_camera_target,
+                uniforms,
+            });
+            render_app.init_resource::<WorldDataUniforms>();
+        }
+    }
+
+    #[derive(Resource)]
+    struct WorldData {
+        bind_group_layout: BindGroupLayout,
+        bind_group: BindGroup,
+
+        transient_world_texture: Texture,
+        transient_world_texture_view: TextureView,
+        transient_world_camera_target: Handle<Image>,
+
+        uniforms: UniformBuffer<WorldDataUniforms>,
+    }
+
+    #[derive(Default, Debug, Clone, ShaderType, Resource)]
+    struct WorldDataUniforms {
+        player_pos: Vec3,
+        screen_resolution: UVec2,
+    }
+
+    // refer the source code of MaterialPlugin<M>
+    struct ChunkMaterialPlugin;
+    impl Plugin for ChunkMaterialPlugin {
+        fn build(&self, app: &mut bevy::prelude::App) {
+            app
+                .init_asset::<ChunkMaterial>()
+                .add_plugins(ExtractInstancesPlugin::<AssetId<ChunkMaterial>>::extract_visible());
+
+            let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
+                return;
+            };
+
+            render_app.add_systems(ExtractSchedule, extract_world_data)
+                .add_render_command::<Transmissive3d, DrawMaterial<ChunkMaterial>>()
+                .add_render_command::<Transparent3d, DrawMaterial<ChunkMaterial>>()
+                .add_render_command::<Opaque3d, DrawMaterial<ChunkMaterial>>()
+                .add_render_command::<AlphaMask3d, DrawMaterial<ChunkMaterial>>()
+                .init_resource::<ExtractedMaterials<ChunkMaterial>>()
+                .init_resource::<RenderMaterials<ChunkMaterial>>()
+                // .init_resource::<SpecializedMeshPipelines<MaterialPipeline<ChunkMaterial>>>()
+                .init_resource::<SpecializedMeshPipelines<ChunkPipeline>>()
+                .add_systems(ExtractSchedule, extract_materials::<ChunkMaterial>)
+                .add_systems(
+                    Render,
+                    (
+                        prepare_materials::<ChunkMaterial>
+                            .in_set(RenderSet::PrepareAssets)
+                            .after(prepare_assets::<Image>),
+                        queue_material_meshes::<ChunkMaterial>
+                            .in_set(RenderSet::QueueMeshes)
+                            .after(prepare_materials::<ChunkMaterial>),
+                    ),
+                );
+        }
+        fn finish(&self, app: &mut bevy::prelude::App) {
+            let render_app = app.sub_app_mut(RenderApp);
+
+            render_app
+                // .add_render_command::<Opaque3d, DrawMaterial<ChunkMaterial>>()
+                // .init_resource::<MaterialPipeline<ChunkMaterial>>()
+                .init_resource::<ChunkPipeline>();
+
+            render_app.add_systems(Render, update_world_data.in_set(RenderSet::Prepare));
+        }
+    }
+
+    fn extract_world_data(
+        mut commands: Commands,
+        player: Extract<Query<&GlobalTransform, With<PlayerEntity>>>,
+        windows: Extract<Query<&Window>>,
+    ) {
+        let Ok(window) = windows.get_single() else {
+            return;
+        };
+        let player = player.single();
+        let width = window.resolution.physical_width() as _;
+        let height = window.resolution.physical_height() as _;
+
+        commands.insert_resource(WorldDataUniforms {
+            player_pos: player.translation(),
+            screen_resolution: UVec2::new(width, height),
+        });
+    }
+
+    fn update_world_data(
+        mut world_data: ResMut<WorldData>,
+        world_data_uniforms: Res<WorldDataUniforms>,
+        render_device: Res<RenderDevice>,
+        render_queue: Res<RenderQueue>,
+    ) {
+        world_data.uniforms.set(world_data_uniforms.clone());
+        world_data
+            .uniforms
+            .write_buffer(&render_device, &render_queue);
+
+        let bind_group = render_device.create_bind_group(
+            Some("world data bind group"),
+            &world_data.bind_group_layout,
+            &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: world_data.uniforms.binding().unwrap(),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::TextureView(
+                        &world_data.transient_world_texture_view,
+                    ),
+                },
+            ],
+        );
+        world_data.bind_group = bind_group;
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn queue_material_meshes<M: Material>(
+        opaque_draw_functions: Res<DrawFunctions<Opaque3d>>,
+        alpha_mask_draw_functions: Res<DrawFunctions<AlphaMask3d>>,
+        transmissive_draw_functions: Res<DrawFunctions<Transmissive3d>>,
+        transparent_draw_functions: Res<DrawFunctions<Transparent3d>>,
+        material_pipeline: Res<ChunkPipeline>,
+        mut pipelines: ResMut<SpecializedMeshPipelines<ChunkPipeline>>,
+        pipeline_cache: Res<PipelineCache>,
+        msaa: Res<Msaa>,
+        render_meshes: Res<RenderAssets<Mesh>>,
+        render_materials: Res<RenderMaterials<M>>,
+        mut render_mesh_instances: ResMut<RenderMeshInstances>,
+        render_material_instances: Res<RenderMaterialInstances<M>>,
+        images: Res<RenderAssets<Image>>,
+        mut views: Query<(
+            &ExtractedView,
+            &VisibleEntities,
+            Option<&Tonemapping>,
+            Option<&DebandDither>,
+            Option<&EnvironmentMapLight>,
+            Option<&ShadowFilteringMethod>,
+            Option<&ScreenSpaceAmbientOcclusionSettings>,
+            (
+                Has<NormalPrepass>,
+                Has<DepthPrepass>,
+                Has<MotionVectorPrepass>,
+                Has<DeferredPrepass>,
+            ),
+            Option<&Camera3d>,
+            Option<&TemporalJitter>,
+            Option<&Projection>,
+            &mut RenderPhase<Opaque3d>,
+            &mut RenderPhase<AlphaMask3d>,
+            &mut RenderPhase<Transmissive3d>,
+            &mut RenderPhase<Transparent3d>,
+        )>,
+    ) where
+        M::Data: PartialEq + Eq + std::hash::Hash + Clone,
+    {
+        for (
+            view,
+            visible_entities,
+            tonemapping,
+            dither,
+            environment_map,
+            shadow_filter_method,
+            ssao,
+            (normal_prepass, depth_prepass, motion_vector_prepass, deferred_prepass),
+            camera_3d,
+            temporal_jitter,
+            projection,
+            mut opaque_phase,
+            mut alpha_mask_phase,
+            mut transmissive_phase,
+            mut transparent_phase,
+        ) in &mut views
+        {
+            let draw_opaque_pbr = opaque_draw_functions.read().id::<DrawMaterial<M>>();
+            let draw_alpha_mask_pbr = alpha_mask_draw_functions.read().id::<DrawMaterial<M>>();
+            let draw_transmissive_pbr = transmissive_draw_functions.read().id::<DrawMaterial<M>>();
+            let draw_transparent_pbr = transparent_draw_functions.read().id::<DrawMaterial<M>>();
+
+            let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
+                | MeshPipelineKey::from_hdr(view.hdr);
+
+            if normal_prepass {
+                view_key |= MeshPipelineKey::NORMAL_PREPASS;
+            }
+
+            if depth_prepass {
+                view_key |= MeshPipelineKey::DEPTH_PREPASS;
+            }
+
+            if motion_vector_prepass {
+                view_key |= MeshPipelineKey::MOTION_VECTOR_PREPASS;
+            }
+
+            if deferred_prepass {
+                view_key |= MeshPipelineKey::DEFERRED_PREPASS;
+            }
+
+            if temporal_jitter.is_some() {
+                view_key |= MeshPipelineKey::TEMPORAL_JITTER;
+            }
+
+            let environment_map_loaded = environment_map.is_some_and(|map| map.is_loaded(&images));
+
+            if environment_map_loaded {
+                view_key |= MeshPipelineKey::ENVIRONMENT_MAP;
+            }
+
+            if let Some(projection) = projection {
+                view_key |= match projection {
+                    Projection::Perspective(_) => MeshPipelineKey::VIEW_PROJECTION_PERSPECTIVE,
+                    Projection::Orthographic(_) => MeshPipelineKey::VIEW_PROJECTION_ORTHOGRAPHIC,
+                };
+            }
+
+            match shadow_filter_method.unwrap_or(&ShadowFilteringMethod::default()) {
+                ShadowFilteringMethod::Hardware2x2 => {
+                    view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_HARDWARE_2X2;
+                }
+                ShadowFilteringMethod::Castano13 => {
+                    view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_CASTANO_13;
+                }
+                ShadowFilteringMethod::Jimenez14 => {
+                    view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_JIMENEZ_14;
+                }
+            }
+
+            if !view.hdr {
+                if let Some(tonemapping) = tonemapping {
+                    view_key |= MeshPipelineKey::TONEMAP_IN_SHADER;
+                    view_key |= tonemapping_pipeline_key(*tonemapping);
+                }
+                if let Some(DebandDither::Enabled) = dither {
+                    view_key |= MeshPipelineKey::DEBAND_DITHER;
+                }
+            }
+            if ssao.is_some() {
+                view_key |= MeshPipelineKey::SCREEN_SPACE_AMBIENT_OCCLUSION;
+            }
+            if let Some(camera_3d) = camera_3d {
+                view_key |= screen_space_specular_transmission_pipeline_key(
+                    camera_3d.screen_space_specular_transmission_quality,
+                );
+            }
+            let rangefinder = view.rangefinder3d();
+            for visible_entity in &visible_entities.entities {
+                let Some(material_asset_id) = render_material_instances.get(visible_entity) else {
+                    continue;
+                };
+                let Some(mesh_instance) = render_mesh_instances.get_mut(visible_entity) else {
+                    continue;
+                };
+                let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id) else {
+                    continue;
+                };
+                let Some(material) = render_materials.get(material_asset_id) else {
+                    continue;
+                };
+
+                let forward = match material.properties.render_method {
+                    OpaqueRendererMethod::Forward => true,
+                    OpaqueRendererMethod::Deferred => false,
+                    OpaqueRendererMethod::Auto => unreachable!(),
+                };
+
+                let mut mesh_key = view_key;
+
+                mesh_key |= MeshPipelineKey::from_primitive_topology(mesh.primitive_topology);
+
+                if mesh.morph_targets.is_some() {
+                    mesh_key |= MeshPipelineKey::MORPH_TARGETS;
+                }
+                mesh_key |= alpha_mode_pipeline_key(material.properties.alpha_mode);
+
+                let pipeline_id = pipelines.specialize(
+                    &pipeline_cache,
+                    &material_pipeline,
+                    MaterialPipelineKey {
+                        mesh_key,
+                        // bind_group_data: material.key.clone(),
+                        bind_group_data: (),
+                    },
+                    &mesh.layout,
+                );
+                let pipeline_id = match pipeline_id {
+                    Ok(id) => id,
+                    Err(err) => {
+                        bevy::log::error!("{}", err);
+                        continue;
+                    }
+                };
+
+                mesh_instance.material_bind_group_id = material.get_bind_group_id();
+
+                let distance = rangefinder
+                    .distance_translation(&mesh_instance.transforms.transform.translation)
+                    + material.properties.depth_bias;
+                match material.properties.alpha_mode {
+                    AlphaMode::Opaque => {
+                        if material.properties.reads_view_transmission_texture {
+                            transmissive_phase.add(Transmissive3d {
+                                entity: *visible_entity,
+                                draw_function: draw_transmissive_pbr,
+                                pipeline: pipeline_id,
+                                distance,
+                                batch_range: 0..1,
+                                dynamic_offset: None,
+                            });
+                        } else if forward {
+                            opaque_phase.add(Opaque3d {
+                                entity: *visible_entity,
+                                draw_function: draw_opaque_pbr,
+                                pipeline: pipeline_id,
+                                distance,
+                                batch_range: 0..1,
+                                dynamic_offset: None,
+                            });
+                        }
+                    }
+                    AlphaMode::Mask(_) => {
+                        if material.properties.reads_view_transmission_texture {
+                            transmissive_phase.add(Transmissive3d {
+                                entity: *visible_entity,
+                                draw_function: draw_transmissive_pbr,
+                                pipeline: pipeline_id,
+                                distance,
+                                batch_range: 0..1,
+                                dynamic_offset: None,
+                            });
+                        } else if forward {
+                            alpha_mask_phase.add(AlphaMask3d {
+                                entity: *visible_entity,
+                                draw_function: draw_alpha_mask_pbr,
+                                pipeline: pipeline_id,
+                                distance,
+                                batch_range: 0..1,
+                                dynamic_offset: None,
+                            });
+                        }
+                    }
+                    AlphaMode::Blend
+                    | AlphaMode::Premultiplied
+                    | AlphaMode::Add
+                    | AlphaMode::Multiply => {
+                        transparent_phase.add(Transparent3d {
+                            entity: *visible_entity,
+                            draw_function: draw_transparent_pbr,
+                            pipeline: pipeline_id,
+                            distance,
+                            batch_range: 0..1,
+                            dynamic_offset: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    const fn tonemapping_pipeline_key(tonemapping: Tonemapping) -> MeshPipelineKey {
+        match tonemapping {
+            Tonemapping::None => MeshPipelineKey::TONEMAP_METHOD_NONE,
+            Tonemapping::Reinhard => MeshPipelineKey::TONEMAP_METHOD_REINHARD,
+            Tonemapping::ReinhardLuminance => MeshPipelineKey::TONEMAP_METHOD_REINHARD_LUMINANCE,
+            Tonemapping::AcesFitted => MeshPipelineKey::TONEMAP_METHOD_ACES_FITTED,
+            Tonemapping::AgX => MeshPipelineKey::TONEMAP_METHOD_AGX,
+            Tonemapping::SomewhatBoringDisplayTransform => {
+                MeshPipelineKey::TONEMAP_METHOD_SOMEWHAT_BORING_DISPLAY_TRANSFORM
+            }
+            Tonemapping::TonyMcMapface => MeshPipelineKey::TONEMAP_METHOD_TONY_MC_MAPFACE,
+            Tonemapping::BlenderFilmic => MeshPipelineKey::TONEMAP_METHOD_BLENDER_FILMIC,
+        }
+    }
+
+    const fn screen_space_specular_transmission_pipeline_key(
+        screen_space_transmissive_blur_quality: ScreenSpaceTransmissionQuality,
+    ) -> MeshPipelineKey {
+        match screen_space_transmissive_blur_quality {
+            ScreenSpaceTransmissionQuality::Low => {
+                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_LOW
+            }
+            ScreenSpaceTransmissionQuality::Medium => {
+                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_MEDIUM
+            }
+            ScreenSpaceTransmissionQuality::High => {
+                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_HIGH
+            }
+            ScreenSpaceTransmissionQuality::Ultra => {
+                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_ULTRA
+            }
+        }
+    }
+    const fn alpha_mode_pipeline_key(alpha_mode: AlphaMode) -> MeshPipelineKey {
+        match alpha_mode {
+            // Premultiplied and Add share the same pipeline key
+            // They're made distinct in the PBR shader, via `premultiply_alpha()`
+            AlphaMode::Premultiplied | AlphaMode::Add => MeshPipelineKey::BLEND_PREMULTIPLIED_ALPHA,
+            AlphaMode::Blend => MeshPipelineKey::BLEND_ALPHA,
+            AlphaMode::Multiply => MeshPipelineKey::BLEND_MULTIPLY,
+            AlphaMode::Mask(_) => MeshPipelineKey::MAY_DISCARD,
+            _ => MeshPipelineKey::NONE,
+        }
+    }
+
+    /// All [`Material`] values of a given type that should be prepared next frame.
+    pub struct PrepareNextFrameMaterials<M: Material> {
+        assets: Vec<(AssetId<M>, M)>,
+    }
+
+    impl<M: Material> Default for PrepareNextFrameMaterials<M> {
+        fn default() -> Self {
+            Self {
+                assets: Default::default(),
+            }
+        }
+    }
+    /// Default render method used for opaque materials.
+    #[derive(Default, Resource, Clone, Debug, ExtractResource, Reflect)]
+    pub struct DefaultOpaqueRendererMethod(OpaqueRendererMethod);
+
+    impl DefaultOpaqueRendererMethod {
+        pub fn forward() -> Self {
+            DefaultOpaqueRendererMethod(OpaqueRendererMethod::Forward)
+        }
+
+        pub fn deferred() -> Self {
+            DefaultOpaqueRendererMethod(OpaqueRendererMethod::Deferred)
+        }
+
+        pub fn set_to_forward(&mut self) {
+            self.0 = OpaqueRendererMethod::Forward;
+        }
+
+        pub fn set_to_deferred(&mut self) {
+            self.0 = OpaqueRendererMethod::Deferred;
+        }
+    }
+    #[derive(Resource)]
+    pub struct ExtractedMaterials<M: Material> {
+        extracted: Vec<(AssetId<M>, M)>,
+        removed: Vec<AssetId<M>>,
+    }
+    impl<M: Material> Default for ExtractedMaterials<M> {
+        fn default() -> Self {
+            Self {
+                extracted: Default::default(),
+                removed: Default::default(),
+            }
+        }
+    }
+    /// This system prepares all assets of the corresponding [`Material`] type
+    /// which where extracted this frame for the GPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_materials<M: Material>(
+        mut prepare_next_frame: Local<PrepareNextFrameMaterials<M>>,
+        mut extracted_assets: ResMut<ExtractedMaterials<M>>,
+        mut render_materials: ResMut<RenderMaterials<M>>,
+        render_device: Res<RenderDevice>,
+        images: Res<RenderAssets<Image>>,
+        fallback_image: Res<FallbackImage>,
+        pipeline: Res<ChunkPipeline>,
+        // default_opaque_render_method: Res<DefaultOpaqueRendererMethod>,
+    ) {
+        let queued_assets = std::mem::take(&mut prepare_next_frame.assets);
+        for (id, material) in queued_assets.into_iter() {
+            match prepare_material(
+                &material,
+                &render_device,
+                &images,
+                &fallback_image,
+                &pipeline,
+                OpaqueRendererMethod::Forward,
+            ) {
+                Ok(prepared_asset) => {
+                    render_materials.insert(id, prepared_asset);
+                }
+                Err(AsBindGroupError::RetryNextUpdate) => {
+                    prepare_next_frame.assets.push((id, material));
+                }
+            }
+        }
+
+        for removed in std::mem::take(&mut extracted_assets.removed) {
+            render_materials.remove(&removed);
+        }
+
+        for (id, material) in std::mem::take(&mut extracted_assets.extracted) {
+            match prepare_material(
+                &material,
+                &render_device,
+                &images,
+                &fallback_image,
+                &pipeline,
+                OpaqueRendererMethod::Forward,
+            ) {
+                Ok(prepared_asset) => {
+                    render_materials.insert(id, prepared_asset);
+                }
+                Err(AsBindGroupError::RetryNextUpdate) => {
+                    prepare_next_frame.assets.push((id, material));
+                }
+            }
+        }
+    }
+
+    fn prepare_material<M: Material>(
+        material: &M,
+        render_device: &RenderDevice,
+        images: &RenderAssets<Image>,
+        fallback_image: &FallbackImage,
+        pipeline: &ChunkPipeline,
+        default_opaque_render_method: OpaqueRendererMethod,
+    ) -> Result<PreparedMaterial<M>, AsBindGroupError> {
+        let prepared = material.as_bind_group(
+            &pipeline.material_bind_group_layout,
+            render_device,
+            images,
+            fallback_image,
+        )?;
+        let method = match material.opaque_render_method() {
+            OpaqueRendererMethod::Forward => OpaqueRendererMethod::Forward,
+            OpaqueRendererMethod::Deferred => OpaqueRendererMethod::Deferred,
+            OpaqueRendererMethod::Auto => default_opaque_render_method,
+        };
+        Ok(PreparedMaterial {
+            bindings: prepared.bindings,
+            bind_group: prepared.bind_group,
+            key: prepared.data,
+            properties: MaterialProperties {
+                alpha_mode: material.alpha_mode(),
+                depth_bias: material.depth_bias(),
+                reads_view_transmission_texture: material.reads_view_transmission_texture(),
+                render_method: method,
+            },
+        })
+    }
+    /// This system extracts all created or modified assets of the corresponding [`Material`] type
+    /// into the "render world".
+    pub fn extract_materials<M: Material>(
+        mut commands: Commands,
+        mut events: Extract<EventReader<AssetEvent<M>>>,
+        assets: Extract<Res<Assets<M>>>,
+    ) {
+        let mut changed_assets = HashSet::default();
+        let mut removed = Vec::new();
+        for event in events.read() {
+            match event {
+                AssetEvent::Added { id } | AssetEvent::Modified { id } => {
+                    changed_assets.insert(*id);
+                }
+                AssetEvent::Removed { id } => {
+                    changed_assets.remove(id);
+                    removed.push(*id);
+                }
+                AssetEvent::LoadedWithDependencies { .. } => {
+                    // TODO: handle this
+                }
+            }
+        }
+
+        let mut extracted_assets = Vec::new();
+        for id in changed_assets.drain() {
+            if let Some(asset) = assets.get(id) {
+                extracted_assets.push((id, asset.clone()));
+            }
+        }
+
+        commands.insert_resource(ExtractedMaterials {
+            extracted: extracted_assets,
+            removed,
+        });
+    }
+
+    #[derive(Resource)]
+    pub struct ChunkPipeline {
+        // mesh_pipeline: MaterialPipeline<ChunkMaterial>,
+        mesh_pipeline: MeshPipeline,
+        material_bind_group_layout: BindGroupLayout,
+        world_bind_group_layout: BindGroupLayout,
+        chunk_fragment_shader: Handle<Shader>,
+    }
+    impl FromWorld for ChunkPipeline {
+        fn from_world(world: &mut bevy::prelude::World) -> Self {
+            let world_data = world.resource::<WorldData>();
+            let asset_server = world.resource::<AssetServer>();
+            let render_device = world.resource::<RenderDevice>();
+            let chunk_fragment_shader = asset_server.load("shaders/chunk.wgsl");
+            Self {
+                // mesh_pipeline: world.resource::<MaterialPipeline<ChunkMaterial>>().clone(),
+                mesh_pipeline: world.resource::<MeshPipeline>().clone(),
+                world_bind_group_layout: world_data.bind_group_layout.clone(),
+                material_bind_group_layout: ChunkMaterial::bind_group_layout(render_device),
+                chunk_fragment_shader,
+            }
+        }
+    }
+    impl SpecializedMeshPipeline for ChunkPipeline {
+        type Key = MaterialPipelineKey<ChunkMaterial>;
+        // type Key = MeshPipelineKey;
+
+        fn specialize(
+            &self,
+            key: Self::Key,
+            layout: &MeshVertexBufferLayout,
+        ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+            let mut desc = self.mesh_pipeline.specialize(key.mesh_key, layout)?;
+            desc.layout
+                .insert(1, self.material_bind_group_layout.clone());
+            desc.layout.insert(3, self.world_bind_group_layout.clone());
+            desc.fragment.as_mut().unwrap().shader = self.chunk_fragment_shader.clone();
+            dbg!(&desc.layout);
+            Ok(desc)
+        }
+    }
+    /// A key uniquely identifying a specialized [`MaterialPipeline`].
+    pub struct MaterialPipelineKey<M: Material> {
+        pub mesh_key: MeshPipelineKey,
+        pub bind_group_data: M::Data,
+    }
+
+    impl<M: Material> Eq for MaterialPipelineKey<M> where M::Data: PartialEq {}
+
+    impl<M: Material> PartialEq for MaterialPipelineKey<M>
+    where
+        M::Data: PartialEq,
+    {
+        fn eq(&self, other: &Self) -> bool {
+            self.mesh_key == other.mesh_key && self.bind_group_data == other.bind_group_data
+        }
+    }
+
+    impl<M: Material> Clone for MaterialPipelineKey<M>
+    where
+        M::Data: Clone,
+    {
+        fn clone(&self) -> Self {
+            Self {
+                mesh_key: self.mesh_key,
+                bind_group_data: self.bind_group_data.clone(),
+            }
+        }
+    }
+
+    impl<M: Material> std::hash::Hash for MaterialPipelineKey<M>
+    where
+        M::Data: std::hash::Hash,
+    {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            self.mesh_key.hash(state);
+            self.bind_group_data.hash(state);
+        }
+    }
+
+    type DrawMaterial<M> = (
+        SetItemPipeline,
+        SetMeshViewBindGroup<0>,
+        SetMaterialBindGroup<M, 1>,
+        SetMeshBindGroup<2>,
+        SetWorldBindGroup<3>,
+        DrawMesh,
+    );
+    // we only have 1 world, so we use a resource
+    // and set bind group for this one world
+    struct SetWorldBindGroup<const I: usize>;
+    impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetWorldBindGroup<I> {
+        type Param = SRes<WorldData>;
+
+        type ViewWorldQuery = ();
+
+        type ItemWorldQuery = ();
+
+        fn render<'w>(
+            item: &P,
+            view: ROQueryItem<'w, Self::ViewWorldQuery>,
+            entity: ROQueryItem<'w, Self::ItemWorldQuery>,
+            param: SystemParamItem<'w, '_, Self::Param>,
+            pass: &mut TrackedRenderPass<'w>,
+        ) -> RenderCommandResult {
+            let world = param.into_inner();
+
+            pass.set_bind_group(I, &world.bind_group, &[]);
+
+            RenderCommandResult::Success
+        }
+    }
+}
+
 mod chunk {
     use bevy::pbr::DefaultOpaqueRendererMethod;
     use bevy::render::mesh::{Indices, VertexAttributeValues};
@@ -172,7 +1059,6 @@ mod chunk {
                     || {},
                     // spawn_chunk_tasks,
                     // resolve_chunk_tasks,
-                    update_chunk_material,
                 ),
             );
         }
@@ -247,8 +1133,6 @@ mod chunk {
                 side: side as _,
                 voxels: voxels_handle.clone(),
                 materials: material_handle.clone(),
-                player_position: Vec3::ZERO,
-                resolution: Vec2::ZERO,
                 chunk_position: chunk_pos,
                 chunk_size: size,
                 voxels_mip1: mip1_handle,
@@ -850,10 +1734,6 @@ mod chunk {
         pub side: u32,
         #[texture(2, dimension = "1d", sample_type = "float", filterable = false)]
         pub materials: Handle<Image>,
-        #[uniform(3)]
-        pub player_position: Vec3,
-        #[uniform(4)]
-        pub resolution: Vec2,
         #[uniform(5)]
         pub chunk_position: Vec3,
         #[uniform(6)]
@@ -1095,28 +1975,6 @@ mod chunk {
         }
     }
     */
-
-    // TODO: use a custom pipeline and remove this from this material
-    // or just use ExtractComponentPlugin<{ pos: Vec3 }>
-    fn update_chunk_material(
-        players: Query<(&PlayerEntity, &Transform)>,
-        mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
-        windows: Query<&Window>,
-        chunks: Query<(&Handle<ChunkMaterial>, &GlobalTransform)>,
-    ) {
-        let (_, player) = players.single();
-        let window = windows.single();
-        let width = window.resolution.physical_width() as _;
-        let height = window.resolution.physical_height() as _;
-        for material in chunk_materials.iter_mut() {
-            material.1.player_position = player.translation;
-            material.1.resolution = Vec2::new(width, height);
-        }
-
-        for (material, pos) in chunks.iter() {
-            chunk_materials.get_mut(material).unwrap().chunk_position = pos.translation();
-        }
-    }
 }
 
 mod vox {
@@ -1435,8 +2293,6 @@ mod vox {
                 side: side as _,
                 voxels: voxels_handle.clone(),
                 materials: material_handle.clone(),
-                player_position: Vec3::ZERO,
-                resolution: Vec2::ZERO,
                 chunk_position: chunk_pos,
                 chunk_size: size,
                 voxels_mip1: mip1_handle,
@@ -1648,8 +2504,8 @@ mod player {
     #[derive(Component)]
     pub struct PlayerEntity;
 
-    pub struct Player;
-    impl Plugin for Player {
+    pub struct PlayerPlugin;
+    impl Plugin for PlayerPlugin {
         fn build(&self, app: &mut App) {
             app.add_systems(Startup, setup)
                 .add_systems(Update, update.run_if(in_state(ControlsState::Player)));
