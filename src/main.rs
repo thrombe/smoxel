@@ -137,7 +137,7 @@ enum ControlsState {
 mod render {
     use bevy::{
         app::{Plugin, Startup},
-        asset::{load_internal_asset, AssetApp, AssetId, AssetServer, Assets, Handle, AssetEvent},
+        asset::{load_internal_asset, AssetApp, AssetEvent, AssetId, AssetServer, Assets, Handle},
         core::Name,
         core_pipeline::{
             clear_color::ClearColorConfig,
@@ -152,22 +152,23 @@ mod render {
             bundle::Bundle,
             component::Component,
             entity::Entity,
+            event::EventReader,
             query::{Has, ROQueryItem, With},
             schedule::{IntoSystemConfigs, NextState, OnEnter, State, States},
             system::{
                 lifetimeless::{Read, SQuery, SRes},
                 Commands, Local, Query, Res, ResMut, Resource, RunSystemOnce, SystemParamItem,
             },
-            world::FromWorld, event::EventReader,
+            world::FromWorld,
         },
         math::{UVec2, Vec2, Vec3},
         pbr::{
-            AlphaMode, DrawMesh, EnvironmentMapLight, Material,
-            MaterialBindGroupId, MaterialMeshBundle, MaterialProperties, MeshFlags, MeshPipeline,
-            MeshPipelineKey, MeshPipelineViewLayoutKey, MeshTransforms, OpaqueRendererMethod,
-            PreparedMaterial, RenderMaterialInstances, RenderMaterials, RenderMeshInstance,
-            RenderMeshInstances, ScreenSpaceAmbientOcclusionSettings, SetMaterialBindGroup,
-            SetMeshBindGroup, SetMeshViewBindGroup, ShadowFilteringMethod,
+            AlphaMode, DrawMesh, EnvironmentMapLight, Material, MaterialBindGroupId,
+            MaterialMeshBundle, MaterialProperties, MeshFlags, MeshPipeline, MeshPipelineKey,
+            MeshPipelineViewLayoutKey, MeshTransforms, OpaqueRendererMethod, PreparedMaterial,
+            RenderMaterialInstances, RenderMaterials, RenderMeshInstance, RenderMeshInstances,
+            ScreenSpaceAmbientOcclusionSettings, SetMaterialBindGroup, SetMeshBindGroup,
+            SetMeshViewBindGroup, ShadowFilteringMethod,
         },
         reflect::Reflect,
         render::{
@@ -210,7 +211,8 @@ mod render {
             Extract, ExtractSchedule, Render, RenderApp, RenderSet,
         },
         transform::components::{GlobalTransform, Transform},
-        window::Window, utils::HashSet,
+        utils::HashSet,
+        window::Window,
     };
 
     use crate::{
@@ -365,22 +367,21 @@ mod render {
     struct ChunkMaterialPlugin;
     impl Plugin for ChunkMaterialPlugin {
         fn build(&self, app: &mut bevy::prelude::App) {
-            app
-                .init_asset::<ChunkMaterial>()
+            app.init_asset::<ChunkMaterial>()
                 .add_plugins(ExtractInstancesPlugin::<AssetId<ChunkMaterial>>::extract_visible());
 
             let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
+                // TODO: figure out why doing this is fine.
+                // i would assume that not adding the systems below this if the renderer is not initialized *yet*
+                // will cause problems. but bevy code does this too.
                 return;
             };
 
-            render_app.add_systems(ExtractSchedule, extract_world_data)
-                .add_render_command::<Transmissive3d, DrawMaterial<ChunkMaterial>>()
-                .add_render_command::<Transparent3d, DrawMaterial<ChunkMaterial>>()
+            render_app
+                .add_systems(ExtractSchedule, extract_world_data)
                 .add_render_command::<Opaque3d, DrawMaterial<ChunkMaterial>>()
-                .add_render_command::<AlphaMask3d, DrawMaterial<ChunkMaterial>>()
                 .init_resource::<ExtractedMaterials<ChunkMaterial>>()
                 .init_resource::<RenderMaterials<ChunkMaterial>>()
-                // .init_resource::<SpecializedMeshPipelines<MaterialPipeline<ChunkMaterial>>>()
                 .init_resource::<SpecializedMeshPipelines<ChunkPipeline>>()
                 .add_systems(ExtractSchedule, extract_materials::<ChunkMaterial>)
                 .add_systems(
@@ -398,10 +399,7 @@ mod render {
         fn finish(&self, app: &mut bevy::prelude::App) {
             let render_app = app.sub_app_mut(RenderApp);
 
-            render_app
-                // .add_render_command::<Opaque3d, DrawMaterial<ChunkMaterial>>()
-                // .init_resource::<MaterialPipeline<ChunkMaterial>>()
-                .init_resource::<ChunkPipeline>();
+            render_app.init_resource::<ChunkPipeline>();
 
             render_app.add_systems(Render, update_world_data.in_set(RenderSet::Prepare));
         }
@@ -458,9 +456,6 @@ mod render {
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn queue_material_meshes<M: Material>(
         opaque_draw_functions: Res<DrawFunctions<Opaque3d>>,
-        alpha_mask_draw_functions: Res<DrawFunctions<AlphaMask3d>>,
-        transmissive_draw_functions: Res<DrawFunctions<Transmissive3d>>,
-        transparent_draw_functions: Res<DrawFunctions<Transparent3d>>,
         material_pipeline: Res<ChunkPipeline>,
         mut pipelines: ResMut<SpecializedMeshPipelines<ChunkPipeline>>,
         pipeline_cache: Res<PipelineCache>,
@@ -469,28 +464,15 @@ mod render {
         render_materials: Res<RenderMaterials<M>>,
         mut render_mesh_instances: ResMut<RenderMeshInstances>,
         render_material_instances: Res<RenderMaterialInstances<M>>,
-        images: Res<RenderAssets<Image>>,
         mut views: Query<(
             &ExtractedView,
             &VisibleEntities,
             Option<&Tonemapping>,
-            Option<&DebandDither>,
-            Option<&EnvironmentMapLight>,
-            Option<&ShadowFilteringMethod>,
-            Option<&ScreenSpaceAmbientOcclusionSettings>,
-            (
-                Has<NormalPrepass>,
-                Has<DepthPrepass>,
-                Has<MotionVectorPrepass>,
-                Has<DeferredPrepass>,
-            ),
+            (Has<NormalPrepass>, Has<DepthPrepass>),
             Option<&Camera3d>,
             Option<&TemporalJitter>,
             Option<&Projection>,
             &mut RenderPhase<Opaque3d>,
-            &mut RenderPhase<AlphaMask3d>,
-            &mut RenderPhase<Transmissive3d>,
-            &mut RenderPhase<Transparent3d>,
         )>,
     ) where
         M::Data: PartialEq + Eq + std::hash::Hash + Clone,
@@ -499,24 +481,14 @@ mod render {
             view,
             visible_entities,
             tonemapping,
-            dither,
-            environment_map,
-            shadow_filter_method,
-            ssao,
-            (normal_prepass, depth_prepass, motion_vector_prepass, deferred_prepass),
+            (normal_prepass, depth_prepass),
             camera_3d,
             temporal_jitter,
             projection,
             mut opaque_phase,
-            mut alpha_mask_phase,
-            mut transmissive_phase,
-            mut transparent_phase,
         ) in &mut views
         {
             let draw_opaque_pbr = opaque_draw_functions.read().id::<DrawMaterial<M>>();
-            let draw_alpha_mask_pbr = alpha_mask_draw_functions.read().id::<DrawMaterial<M>>();
-            let draw_transmissive_pbr = transmissive_draw_functions.read().id::<DrawMaterial<M>>();
-            let draw_transparent_pbr = transparent_draw_functions.read().id::<DrawMaterial<M>>();
 
             let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
                 | MeshPipelineKey::from_hdr(view.hdr);
@@ -529,22 +501,8 @@ mod render {
                 view_key |= MeshPipelineKey::DEPTH_PREPASS;
             }
 
-            if motion_vector_prepass {
-                view_key |= MeshPipelineKey::MOTION_VECTOR_PREPASS;
-            }
-
-            if deferred_prepass {
-                view_key |= MeshPipelineKey::DEFERRED_PREPASS;
-            }
-
             if temporal_jitter.is_some() {
                 view_key |= MeshPipelineKey::TEMPORAL_JITTER;
-            }
-
-            let environment_map_loaded = environment_map.is_some_and(|map| map.is_loaded(&images));
-
-            if environment_map_loaded {
-                view_key |= MeshPipelineKey::ENVIRONMENT_MAP;
             }
 
             if let Some(projection) = projection {
@@ -554,34 +512,11 @@ mod render {
                 };
             }
 
-            match shadow_filter_method.unwrap_or(&ShadowFilteringMethod::default()) {
-                ShadowFilteringMethod::Hardware2x2 => {
-                    view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_HARDWARE_2X2;
-                }
-                ShadowFilteringMethod::Castano13 => {
-                    view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_CASTANO_13;
-                }
-                ShadowFilteringMethod::Jimenez14 => {
-                    view_key |= MeshPipelineKey::SHADOW_FILTER_METHOD_JIMENEZ_14;
-                }
-            }
-
             if !view.hdr {
                 if let Some(tonemapping) = tonemapping {
                     view_key |= MeshPipelineKey::TONEMAP_IN_SHADER;
                     view_key |= tonemapping_pipeline_key(*tonemapping);
                 }
-                if let Some(DebandDither::Enabled) = dither {
-                    view_key |= MeshPipelineKey::DEBAND_DITHER;
-                }
-            }
-            if ssao.is_some() {
-                view_key |= MeshPipelineKey::SCREEN_SPACE_AMBIENT_OCCLUSION;
-            }
-            if let Some(camera_3d) = camera_3d {
-                view_key |= screen_space_specular_transmission_pipeline_key(
-                    camera_3d.screen_space_specular_transmission_quality,
-                );
             }
             let rangefinder = view.rangefinder3d();
             for visible_entity in &visible_entities.entities {
@@ -598,12 +533,6 @@ mod render {
                     continue;
                 };
 
-                let forward = match material.properties.render_method {
-                    OpaqueRendererMethod::Forward => true,
-                    OpaqueRendererMethod::Deferred => false,
-                    OpaqueRendererMethod::Auto => unreachable!(),
-                };
-
                 let mut mesh_key = view_key;
 
                 mesh_key |= MeshPipelineKey::from_primitive_topology(mesh.primitive_topology);
@@ -611,16 +540,11 @@ mod render {
                 if mesh.morph_targets.is_some() {
                     mesh_key |= MeshPipelineKey::MORPH_TARGETS;
                 }
-                mesh_key |= alpha_mode_pipeline_key(material.properties.alpha_mode);
 
                 let pipeline_id = pipelines.specialize(
                     &pipeline_cache,
                     &material_pipeline,
-                    MaterialPipelineKey {
-                        mesh_key,
-                        // bind_group_data: material.key.clone(),
-                        bind_group_data: (),
-                    },
+                    mesh_key,
                     &mesh.layout,
                 );
                 let pipeline_id = match pipeline_id {
@@ -636,63 +560,15 @@ mod render {
                 let distance = rangefinder
                     .distance_translation(&mesh_instance.transforms.transform.translation)
                     + material.properties.depth_bias;
-                match material.properties.alpha_mode {
-                    AlphaMode::Opaque => {
-                        if material.properties.reads_view_transmission_texture {
-                            transmissive_phase.add(Transmissive3d {
-                                entity: *visible_entity,
-                                draw_function: draw_transmissive_pbr,
-                                pipeline: pipeline_id,
-                                distance,
-                                batch_range: 0..1,
-                                dynamic_offset: None,
-                            });
-                        } else if forward {
-                            opaque_phase.add(Opaque3d {
-                                entity: *visible_entity,
-                                draw_function: draw_opaque_pbr,
-                                pipeline: pipeline_id,
-                                distance,
-                                batch_range: 0..1,
-                                dynamic_offset: None,
-                            });
-                        }
-                    }
-                    AlphaMode::Mask(_) => {
-                        if material.properties.reads_view_transmission_texture {
-                            transmissive_phase.add(Transmissive3d {
-                                entity: *visible_entity,
-                                draw_function: draw_transmissive_pbr,
-                                pipeline: pipeline_id,
-                                distance,
-                                batch_range: 0..1,
-                                dynamic_offset: None,
-                            });
-                        } else if forward {
-                            alpha_mask_phase.add(AlphaMask3d {
-                                entity: *visible_entity,
-                                draw_function: draw_alpha_mask_pbr,
-                                pipeline: pipeline_id,
-                                distance,
-                                batch_range: 0..1,
-                                dynamic_offset: None,
-                            });
-                        }
-                    }
-                    AlphaMode::Blend
-                    | AlphaMode::Premultiplied
-                    | AlphaMode::Add
-                    | AlphaMode::Multiply => {
-                        transparent_phase.add(Transparent3d {
-                            entity: *visible_entity,
-                            draw_function: draw_transparent_pbr,
-                            pipeline: pipeline_id,
-                            distance,
-                            batch_range: 0..1,
-                            dynamic_offset: None,
-                        });
-                    }
-                }
+
+                opaque_phase.add(Opaque3d {
+                    entity: *visible_entity,
+                    draw_function: draw_opaque_pbr,
+                    pipeline: pipeline_id,
+                    distance,
+                    batch_range: 0..1,
+                    dynamic_offset: None,
+                });
             }
         }
     }
@@ -711,36 +587,6 @@ mod render {
         }
     }
 
-    const fn screen_space_specular_transmission_pipeline_key(
-        screen_space_transmissive_blur_quality: ScreenSpaceTransmissionQuality,
-    ) -> MeshPipelineKey {
-        match screen_space_transmissive_blur_quality {
-            ScreenSpaceTransmissionQuality::Low => {
-                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_LOW
-            }
-            ScreenSpaceTransmissionQuality::Medium => {
-                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_MEDIUM
-            }
-            ScreenSpaceTransmissionQuality::High => {
-                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_HIGH
-            }
-            ScreenSpaceTransmissionQuality::Ultra => {
-                MeshPipelineKey::SCREEN_SPACE_SPECULAR_TRANSMISSION_ULTRA
-            }
-        }
-    }
-    const fn alpha_mode_pipeline_key(alpha_mode: AlphaMode) -> MeshPipelineKey {
-        match alpha_mode {
-            // Premultiplied and Add share the same pipeline key
-            // They're made distinct in the PBR shader, via `premultiply_alpha()`
-            AlphaMode::Premultiplied | AlphaMode::Add => MeshPipelineKey::BLEND_PREMULTIPLIED_ALPHA,
-            AlphaMode::Blend => MeshPipelineKey::BLEND_ALPHA,
-            AlphaMode::Multiply => MeshPipelineKey::BLEND_MULTIPLY,
-            AlphaMode::Mask(_) => MeshPipelineKey::MAY_DISCARD,
-            _ => MeshPipelineKey::NONE,
-        }
-    }
-
     /// All [`Material`] values of a given type that should be prepared next frame.
     pub struct PrepareNextFrameMaterials<M: Material> {
         assets: Vec<(AssetId<M>, M)>,
@@ -751,27 +597,6 @@ mod render {
             Self {
                 assets: Default::default(),
             }
-        }
-    }
-    /// Default render method used for opaque materials.
-    #[derive(Default, Resource, Clone, Debug, ExtractResource, Reflect)]
-    pub struct DefaultOpaqueRendererMethod(OpaqueRendererMethod);
-
-    impl DefaultOpaqueRendererMethod {
-        pub fn forward() -> Self {
-            DefaultOpaqueRendererMethod(OpaqueRendererMethod::Forward)
-        }
-
-        pub fn deferred() -> Self {
-            DefaultOpaqueRendererMethod(OpaqueRendererMethod::Deferred)
-        }
-
-        pub fn set_to_forward(&mut self) {
-            self.0 = OpaqueRendererMethod::Forward;
-        }
-
-        pub fn set_to_deferred(&mut self) {
-            self.0 = OpaqueRendererMethod::Deferred;
         }
     }
     #[derive(Resource)]
@@ -798,7 +623,6 @@ mod render {
         images: Res<RenderAssets<Image>>,
         fallback_image: Res<FallbackImage>,
         pipeline: Res<ChunkPipeline>,
-        // default_opaque_render_method: Res<DefaultOpaqueRendererMethod>,
     ) {
         let queued_assets = std::mem::take(&mut prepare_next_frame.assets);
         for (id, material) in queued_assets.into_iter() {
@@ -808,7 +632,6 @@ mod render {
                 &images,
                 &fallback_image,
                 &pipeline,
-                OpaqueRendererMethod::Forward,
             ) {
                 Ok(prepared_asset) => {
                     render_materials.insert(id, prepared_asset);
@@ -830,7 +653,6 @@ mod render {
                 &images,
                 &fallback_image,
                 &pipeline,
-                OpaqueRendererMethod::Forward,
             ) {
                 Ok(prepared_asset) => {
                     render_materials.insert(id, prepared_asset);
@@ -848,7 +670,6 @@ mod render {
         images: &RenderAssets<Image>,
         fallback_image: &FallbackImage,
         pipeline: &ChunkPipeline,
-        default_opaque_render_method: OpaqueRendererMethod,
     ) -> Result<PreparedMaterial<M>, AsBindGroupError> {
         let prepared = material.as_bind_group(
             &pipeline.material_bind_group_layout,
@@ -856,11 +677,6 @@ mod render {
             images,
             fallback_image,
         )?;
-        let method = match material.opaque_render_method() {
-            OpaqueRendererMethod::Forward => OpaqueRendererMethod::Forward,
-            OpaqueRendererMethod::Deferred => OpaqueRendererMethod::Deferred,
-            OpaqueRendererMethod::Auto => default_opaque_render_method,
-        };
         Ok(PreparedMaterial {
             bindings: prepared.bindings,
             bind_group: prepared.bind_group,
@@ -869,7 +685,7 @@ mod render {
                 alpha_mode: material.alpha_mode(),
                 depth_bias: material.depth_bias(),
                 reads_view_transmission_texture: material.reads_view_transmission_texture(),
-                render_method: method,
+                render_method: OpaqueRendererMethod::Forward,
             },
         })
     }
@@ -912,7 +728,6 @@ mod render {
 
     #[derive(Resource)]
     pub struct ChunkPipeline {
-        // mesh_pipeline: MaterialPipeline<ChunkMaterial>,
         mesh_pipeline: MeshPipeline,
         material_bind_group_layout: BindGroupLayout,
         world_bind_group_layout: BindGroupLayout,
@@ -925,7 +740,6 @@ mod render {
             let render_device = world.resource::<RenderDevice>();
             let chunk_fragment_shader = asset_server.load("shaders/chunk.wgsl");
             Self {
-                // mesh_pipeline: world.resource::<MaterialPipeline<ChunkMaterial>>().clone(),
                 mesh_pipeline: world.resource::<MeshPipeline>().clone(),
                 world_bind_group_layout: world_data.bind_group_layout.clone(),
                 material_bind_group_layout: ChunkMaterial::bind_group_layout(render_device),
@@ -934,59 +748,19 @@ mod render {
         }
     }
     impl SpecializedMeshPipeline for ChunkPipeline {
-        type Key = MaterialPipelineKey<ChunkMaterial>;
-        // type Key = MeshPipelineKey;
+        type Key = MeshPipelineKey;
 
         fn specialize(
             &self,
             key: Self::Key,
             layout: &MeshVertexBufferLayout,
         ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
-            let mut desc = self.mesh_pipeline.specialize(key.mesh_key, layout)?;
+            let mut desc = self.mesh_pipeline.specialize(key, layout)?;
             desc.layout
                 .insert(1, self.material_bind_group_layout.clone());
             desc.layout.insert(3, self.world_bind_group_layout.clone());
             desc.fragment.as_mut().unwrap().shader = self.chunk_fragment_shader.clone();
-            dbg!(&desc.layout);
             Ok(desc)
-        }
-    }
-    /// A key uniquely identifying a specialized [`MaterialPipeline`].
-    pub struct MaterialPipelineKey<M: Material> {
-        pub mesh_key: MeshPipelineKey,
-        pub bind_group_data: M::Data,
-    }
-
-    impl<M: Material> Eq for MaterialPipelineKey<M> where M::Data: PartialEq {}
-
-    impl<M: Material> PartialEq for MaterialPipelineKey<M>
-    where
-        M::Data: PartialEq,
-    {
-        fn eq(&self, other: &Self) -> bool {
-            self.mesh_key == other.mesh_key && self.bind_group_data == other.bind_group_data
-        }
-    }
-
-    impl<M: Material> Clone for MaterialPipelineKey<M>
-    where
-        M::Data: Clone,
-    {
-        fn clone(&self) -> Self {
-            Self {
-                mesh_key: self.mesh_key,
-                bind_group_data: self.bind_group_data.clone(),
-            }
-        }
-    }
-
-    impl<M: Material> std::hash::Hash for MaterialPipelineKey<M>
-    where
-        M::Data: std::hash::Hash,
-    {
-        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-            self.mesh_key.hash(state);
-            self.bind_group_data.hash(state);
         }
     }
 
@@ -998,8 +772,6 @@ mod render {
         SetWorldBindGroup<3>,
         DrawMesh,
     );
-    // we only have 1 world, so we use a resource
-    // and set bind group for this one world
     struct SetWorldBindGroup<const I: usize>;
     impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetWorldBindGroup<I> {
         type Param = SRes<WorldData>;
