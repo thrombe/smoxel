@@ -15,6 +15,7 @@ struct WorldDataUniforms {
 }
 
 @group(3) @binding(0) var<uniform> world_data: WorldDataUniforms;
+@group(3) @binding(2) var depth_texture: texture_2d<f32>;
 
 // returns voxel material in the rightmost byte
 fn get_voxel(pos: vec3<f32>) -> u32 {
@@ -247,6 +248,14 @@ fn fragment(
     let voxel_size = chunk_size * 2.0 / f32(side);
     let chunk_center = chunk_pos;
 
+    #ifdef CHUNK_DEPTH_PREPASS
+    #else
+    if true {
+        // return vec4(screen_uv, 0.0, 1.0);
+        return textureLoad(depth_texture, vec2<i32>(screen_uv * vec2(1920.0, 1080.0)), 0);
+    }
+    #endif
+
     // calculate ray hit pos
     
     var o = ray_origin;
@@ -284,6 +293,10 @@ fn fragment(
     // var res = mip2_loop_final(o, ray_dir, step, stepi, dt);
     // var res = inline_mip2_loop(o, ray_dir, step, stepi, dt);
     // var res = inline_no_mip_loop(o, ray_dir, step, dt);
+
+    #ifdef CHUNK_DEPTH_PREPASS
+        res.color = vec4(1.0/(res.color.xyz*voxel_size + vec3(t)), 1.0);
+    #endif
 
     if res.hit {
         return res.color;
@@ -643,6 +656,13 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
         let index = m.x | m.y | m.z;
         let voxel = getMipBit(comp, index);
         if voxel > 0u {
+            #ifdef CHUNK_DEPTH_PREPASS
+                if true {
+                    res.color = vec4(vec3(_last_t + last_t), 1.0);
+                    res.hit = true;
+                    return res;
+                }
+            #endif
             let voxel = get_voxel_unckecked(marchi + mod2);
             // check again cux of precision issues ig :/
             if voxel > 0u {
