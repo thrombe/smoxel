@@ -135,6 +135,8 @@ enum ControlsState {
 }
 
 mod render {
+    use std::{cmp::Reverse, ops::Range};
+
     use bevy::{
         app::{Plugin, Startup},
         asset::{load_internal_asset, AssetApp, AssetEvent, AssetId, AssetServer, Assets, Handle},
@@ -142,8 +144,10 @@ mod render {
         core_pipeline::{
             clear_color::ClearColorConfig,
             core_3d::{
-                graph::input::VIEW_ENTITY, AlphaMask3d, Camera3d, Camera3dBundle, Opaque3d,
-                ScreenSpaceTransmissionQuality, Transmissive3d, Transparent3d, CORE_3D,
+                self,
+                graph::{input::VIEW_ENTITY, node::{MAIN_OPAQUE_PASS, START_MAIN_PASS, END_MAIN_PASS}},
+                AlphaMask3d, Camera3d, Camera3dBundle, Opaque3d, ScreenSpaceTransmissionQuality,
+                Transmissive3d, Transparent3d, CORE_3D,
             },
             prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass, NormalPrepass},
             tonemapping::{DebandDither, Tonemapping},
@@ -153,13 +157,14 @@ mod render {
             component::Component,
             entity::Entity,
             event::EventReader,
-            query::{Has, ROQueryItem, With},
+            query::{Has, QueryItem, QueryState, ROQueryItem, With},
             schedule::{IntoSystemConfigs, NextState, OnEnter, State, States},
             system::{
                 lifetimeless::{Read, SQuery, SRes},
-                Commands, Local, Query, Res, ResMut, Resource, RunSystemOnce, SystemParamItem,
+                Commands, Local, Query, ReadOnlySystemParam, Res, ResMut, Resource, RunSystemOnce,
+                SystemParamItem, SystemState,
             },
-            world::FromWorld,
+            world::{FromWorld, World},
         },
         math::{UVec2, Vec2, Vec3},
         pbr::{
@@ -168,15 +173,15 @@ mod render {
             MeshPipelineViewLayoutKey, MeshTransforms, OpaqueRendererMethod, PreparedMaterial,
             RenderMaterialInstances, RenderMaterials, RenderMeshInstance, RenderMeshInstances,
             ScreenSpaceAmbientOcclusionSettings, SetMaterialBindGroup, SetMeshBindGroup,
-            SetMeshViewBindGroup, ShadowFilteringMethod,
+            SetMeshViewBindGroup, ShadowFilteringMethod, PrepassPipelinePlugin, Mesh3d, MeshUniform,
         },
         reflect::Reflect,
         render::{
             camera::{
                 Camera, CameraRenderGraph, OrthographicProjection, Projection, RenderTarget,
-                ScalingMode, TemporalJitter,
+                ScalingMode, TemporalJitter, ExtractedCamera,
             },
-            extract_component::{ExtractComponent, ExtractComponentPlugin},
+            extract_component::{ExtractComponent, ExtractComponentPlugin, ComponentUniforms},
             extract_instances::ExtractInstancesPlugin,
             extract_resource::{ExtractResource, ExtractResourcePlugin},
             main_graph::node::CAMERA_DRIVER,
@@ -186,32 +191,37 @@ mod render {
             },
             primitives::{Frustum, Sphere},
             render_asset::{prepare_assets, RenderAssets},
-            render_graph::{RenderGraph, SlotInfo, SlotType},
+            render_graph::{
+                NodeRunError, RenderGraph, RenderGraphApp, RenderGraphContext, SlotInfo, SlotType,
+                ViewNode, ViewNodeRunner,
+            },
             render_phase::{
-                AddRenderCommand, DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult,
-                RenderPhase, SetItemPipeline, TrackedRenderPass,
+                AddRenderCommand, CachedRenderPipelinePhaseItem, Draw, DrawFunctionId,
+                DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult, RenderPhase,
+                SetItemPipeline, TrackedRenderPass, sort_phase_system,
             },
             render_resource::{
                 AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntry, BindGroupLayout,
                 BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
                 BindingType::{self, StorageTexture},
-                BufferBindingType, BufferSize, Extent3d, PipelineCache, PrimitiveTopology,
-                RenderPipelineDescriptor, Shader, ShaderSize, ShaderStages, ShaderType,
-                SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
-                StorageTextureAccess, Texture, TextureDescriptor, TextureDimension, TextureFormat,
-                TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
-                UniformBuffer,
+                BufferBindingType, BufferSize, CachedRenderPipelineId, Extent3d, Operations,
+                PipelineCache, PrimitiveTopology, RenderPassDepthStencilAttachment,
+                RenderPassDescriptor, RenderPipelineDescriptor, Shader, ShaderSize, ShaderStages,
+                ShaderType, SpecializedMeshPipeline, SpecializedMeshPipelineError,
+                SpecializedMeshPipelines, StorageTextureAccess, Texture, TextureDescriptor,
+                TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+                TextureViewDimension, UniformBuffer, LoadOp, BindGroupEntries, Face,
             },
-            renderer::{RenderDevice, RenderQueue},
+            renderer::{RenderContext, RenderDevice, RenderQueue},
             texture::{FallbackImage, Image},
             view::{
-                ExtractedView, InheritedVisibility, Msaa, NoFrustumCulling, ViewVisibility,
-                Visibility, VisibleEntities,
+                ExtractedView, InheritedVisibility, Msaa, NoFrustumCulling, ViewTarget,
+                ViewVisibility, Visibility, VisibleEntities, ViewDepthTexture,
             },
-            Extract, ExtractSchedule, Render, RenderApp, RenderSet,
+            Extract, ExtractSchedule, Render, RenderApp, RenderSet, batching::{batch_and_prepare_render_phase, GetBatchData, write_batched_instance_buffer},
         },
         transform::components::{GlobalTransform, Transform},
-        utils::HashSet,
+        utils::{nonmax::NonMaxU32, FloatOrd, HashSet},
         window::Window,
     };
 
@@ -329,6 +339,27 @@ mod render {
                 data: vec![0; 100usize.pow(2)],
                 ..Default::default()
             };
+            let depth_prepass_texture = render_device.create_texture_with_data(
+                render_queue,
+                &TextureDescriptor {
+                    label: Some("transient world texture"),
+                    size: Extent3d {
+                        width: 1920,
+                        height: 1080,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: TextureDimension::D2,
+                    format: TextureFormat::R8Unorm,
+                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                },
+                &[0; 1920 * 1080],
+            );
+            let depth_prepass_texture_view =
+                transient_world_texture.create_view(&TextureViewDescriptor::default());
+
             let mut images = app.world.resource_mut::<Assets<Image>>();
             let transient_world_camera_target = images.add(transient_world_camera_target_image);
 
@@ -339,6 +370,8 @@ mod render {
                 transient_world_texture,
                 transient_world_texture_view,
                 transient_world_camera_target,
+                depth_prepass_texture,
+                depth_prepass_texture_view,
                 uniforms,
             });
             render_app.init_resource::<WorldDataUniforms>();
@@ -353,6 +386,9 @@ mod render {
         transient_world_texture: Texture,
         transient_world_texture_view: TextureView,
         transient_world_camera_target: Handle<Image>,
+
+        depth_prepass_texture: Texture,
+        depth_prepass_texture_view: TextureView,
 
         uniforms: UniformBuffer<WorldDataUniforms>,
     }
@@ -378,11 +414,26 @@ mod render {
             };
 
             render_app
+                // Add the node that will render the custom phase
+                .add_render_graph_node::<ViewNodeRunner<VoxelRenderNode>>(
+                    CORE_3D,
+                    VoxelRenderNode::NAME,
+                )
+                // This will schedule the custom node to run after the main opaque pass
+                .add_render_graph_edge(CORE_3D, MAIN_OPAQUE_PASS, VoxelRenderNode::NAME);
+
+            render_app
+                .add_systems(ExtractSchedule, extract_render_phase)
                 .add_systems(ExtractSchedule, extract_world_data)
-                .add_render_command::<Opaque3d, DrawMaterial<ChunkMaterial>>()
+                .init_resource::<DrawFunctions<ChunkDepthPhaseItem>>()
+                .init_resource::<DrawFunctions<ChunkRenderPhaseItem>>()
+                .add_render_command::<ChunkDepthPhaseItem, ChunkDepthPrepass<ChunkMaterial>>()
+                // .add_render_command::<Opaque3d, DrawMaterial<ChunkMaterial>>()
+                .add_render_command::<ChunkRenderPhaseItem, DrawMaterial<ChunkMaterial>>()
                 .init_resource::<ExtractedMaterials<ChunkMaterial>>()
                 .init_resource::<RenderMaterials<ChunkMaterial>>()
                 .init_resource::<SpecializedMeshPipelines<ChunkPipeline>>()
+                .init_resource::<SpecializedMeshPipelines<ChunkDepthPipeline>>()
                 .add_systems(ExtractSchedule, extract_materials::<ChunkMaterial>)
                 .add_systems(
                     Render,
@@ -390,18 +441,275 @@ mod render {
                         prepare_materials::<ChunkMaterial>
                             .in_set(RenderSet::PrepareAssets)
                             .after(prepare_assets::<Image>),
+                        sort_phase_system::<ChunkDepthPhaseItem>.in_set(RenderSet::PhaseSort),
+                        sort_phase_system::<ChunkRenderPhaseItem>.in_set(RenderSet::PhaseSort),
                         queue_material_meshes::<ChunkMaterial>
                             .in_set(RenderSet::QueueMeshes)
                             .after(prepare_materials::<ChunkMaterial>),
+                        // prepare_custom_bind_group.in_set(RenderSet::PrepareBindGroups),
+                        (
+                            batch_and_prepare_render_phase::<ChunkRenderPhaseItem, MeshPipeline>,
+                            batch_and_prepare_render_phase::<ChunkDepthPhaseItem, MeshPipeline>,
+                            // batch_and_prepare_render_phase::<ChunkRenderPhaseItem, ChunkPipeline>,
+                            // batch_and_prepare_render_phase::<ChunkDepthPhaseItem, ChunkDepthPipeline>,
+                        ).in_set(RenderSet::PrepareResources),
+                        // write_batched_instance_buffer::<ChunkPipeline>
+                        //     .in_set(RenderSet::PrepareResourcesFlush),
                     ),
                 );
+
+            // let draw_function = DrawMaterialRenderCommandState::<
+            //     Opaque3d,
+            //     DrawMaterial<ChunkMaterial>,
+            //     ChunkDepthPrepass<ChunkMaterial>,
+            // >::new(&mut app.world);
+            // let draw_functions = app.world.get_resource::<DrawFunctions<Opaque3d>>().unwrap();
+            // draw_functions
+            //     .write()
+            //     .add_with::<DrawMaterial<ChunkMaterial>, _>(draw_function);
         }
         fn finish(&self, app: &mut bevy::prelude::App) {
             let render_app = app.sub_app_mut(RenderApp);
 
             render_app.init_resource::<ChunkPipeline>();
+            render_app.init_resource::<ChunkDepthPipeline>();
 
             render_app.add_systems(Render, update_world_data.in_set(RenderSet::Prepare));
+        }
+    }
+
+    fn extract_render_phase(
+        mut commands: Commands,
+        cameras_3d: Extract<Query<(Entity, &Camera), With<Camera3d>>>,
+    ) {
+        for (entity, camera) in &cameras_3d {
+            if camera.is_active {
+                commands
+                    .get_or_spawn(entity)
+                    .insert(RenderPhase::<ChunkDepthPhaseItem>::default())
+                    .insert(RenderPhase::<ChunkRenderPhaseItem>::default());
+            }
+        }
+    }
+
+    // /// Queues the creation of the bind group
+    // fn prepare_custom_bind_group(
+    //     mut commands: Commands,
+    //     depth_pipeline: Res<ChunkDepthPipeline>,
+    //     render_pipeline: Res<ChunkPipeline>,
+    //     render_device: Res<RenderDevice>,
+    //     world_data: Res<WorldData>,
+    //     // custom_material_uniforms: Res<ComponentUniforms<ChunkMaterial>>,
+    // ) {
+    //     let bind_group = render_device.create_bind_group(
+    //         "custom_material_bind_group",
+    //         &custom_pipeline.bind_group_layout,
+    //         &BindGroupEntries::single(world_data.uniforms),
+    //     );
+    //     println!("bind group prepared");
+    //     commands.insert_resource(CustomMaterialBindGroup(bind_group));
+    // }
+
+    #[derive(Default)]
+    struct VoxelRenderNode;
+    impl VoxelRenderNode {
+        const NAME: &'static str = "voxel_render_node";
+    }
+    impl ViewNode for VoxelRenderNode {
+        type ViewQuery = (
+            &'static RenderPhase<ChunkDepthPhaseItem>,
+            &'static RenderPhase<ChunkRenderPhaseItem>,
+            &'static ViewTarget,
+            &'static ViewDepthTexture,
+            &'static Camera3d,
+            &'static ExtractedCamera,
+        );
+
+        fn run(
+            &self,
+            graph: &mut RenderGraphContext,
+            render_context: &mut RenderContext,
+            (depth_phase, render_phase, target, bevy_depth_view, cam3d, cam): QueryItem<Self::ViewQuery>,
+            world: &bevy::prelude::World,
+        ) -> Result<(), NodeRunError> {
+            if render_phase.items.is_empty() {
+                return Ok(());
+            }
+
+            let world_data = world.resource::<WorldData>();
+
+            {
+                // let mut render_pass =
+                //     render_context.begin_tracked_render_pass(RenderPassDescriptor {
+                //         label: Some("chunk_depth_prepass"),
+                //         color_attachments: &[Some(target.get_color_attachment(Operations {
+                //             load: LoadOp::Load,
+                //             store: true,
+                //         }))],
+                //         // color_attachments: &[Some(
+                //         //     bevy::render::render_resource::RenderPassColorAttachment {
+                //         //         view: &world_data.depth_prepass_texture_view,
+                //         //         resolve_target: None,
+                //         //         ops: Operations {
+                //         //             load: Default::default(),
+                //         //             store: true,
+                //         //         },
+                //         //     },
+                //         // )],
+                //         // depth_stencil_attachment: None,
+                //         depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                //             view: &bevy_depth_view.view,
+                //             depth_ops: Some(Operations {
+                //                 load: cam3d.depth_load_op.clone().into(),
+                //                 store: true,
+                //             }),
+                //             stencil_ops: None,
+                //         }),
+                //     });
+
+                // if let Some(viewport) = cam.viewport.as_ref() {
+                //     render_pass.set_camera_viewport(viewport);
+                // }
+
+                // // This will automatically call the draw command on each items in the render phase
+                // depth_phase.render(&mut render_pass, world, graph.view_entity());
+            }
+
+            {
+                let mut render_pass =
+                    render_context.begin_tracked_render_pass(RenderPassDescriptor {
+                        label: Some("chunk_render_pass"),
+                        color_attachments: &[Some(target.get_color_attachment(Operations {
+                            load: LoadOp::Load,
+                            store: true,
+                        }))],
+                        depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                            view: &bevy_depth_view.view,
+                            depth_ops: Some(Operations {
+                                // load: cam3d.depth_load_op.clone().into(),
+                                load: LoadOp::Load,
+                                store: true,
+                            }),
+                            stencil_ops: None,
+                        }),
+                    });
+
+                if let Some(viewport) = cam.viewport.as_ref() {
+                    render_pass.set_camera_viewport(viewport);
+                }
+
+                // This will automatically call the draw command on each items in the render phase
+                render_phase.render(&mut render_pass, world, graph.view_entity());
+            }
+
+            Ok(())
+        }
+    }
+
+    pub struct ChunkRenderPhaseItem {
+        pub distance: f32,
+        pub pipeline: CachedRenderPipelineId,
+        pub entity: Entity,
+        pub draw_function: DrawFunctionId,
+        pub batch_range: Range<u32>,
+        pub dynamic_offset: Option<NonMaxU32>,
+    }
+    impl PhaseItem for ChunkRenderPhaseItem {
+        // NOTE: Values increase towards the camera. Front-to-back ordering for opaque means we need a descending sort.
+        type SortKey = Reverse<FloatOrd>;
+
+        #[inline]
+        fn entity(&self) -> Entity {
+            self.entity
+        }
+
+        #[inline]
+        fn sort_key(&self) -> Self::SortKey {
+            Reverse(FloatOrd(self.distance))
+        }
+
+        #[inline]
+        fn draw_function(&self) -> DrawFunctionId {
+            self.draw_function
+        }
+
+        #[inline]
+        fn batch_range(&self) -> &Range<u32> {
+            &self.batch_range
+        }
+
+        #[inline]
+        fn batch_range_mut(&mut self) -> &mut Range<u32> {
+            &mut self.batch_range
+        }
+
+        #[inline]
+        fn dynamic_offset(&self) -> Option<NonMaxU32> {
+            self.dynamic_offset
+        }
+
+        #[inline]
+        fn dynamic_offset_mut(&mut self) -> &mut Option<NonMaxU32> {
+            &mut self.dynamic_offset
+        }
+    }
+    impl CachedRenderPipelinePhaseItem for ChunkRenderPhaseItem {
+        #[inline]
+        fn cached_pipeline(&self) -> CachedRenderPipelineId {
+            self.pipeline
+        }
+    }
+    pub struct ChunkDepthPhaseItem {
+        pub distance: f32,
+        pub pipeline: CachedRenderPipelineId,
+        pub entity: Entity,
+        pub draw_function: DrawFunctionId,
+        pub batch_range: Range<u32>,
+        pub dynamic_offset: Option<NonMaxU32>,
+    }
+    impl PhaseItem for ChunkDepthPhaseItem {
+        // NOTE: Values increase towards the camera. Front-to-back ordering for opaque means we need a descending sort.
+        type SortKey = Reverse<FloatOrd>;
+
+        #[inline]
+        fn entity(&self) -> Entity {
+            self.entity
+        }
+
+        #[inline]
+        fn sort_key(&self) -> Self::SortKey {
+            Reverse(FloatOrd(self.distance))
+        }
+
+        #[inline]
+        fn draw_function(&self) -> DrawFunctionId {
+            self.draw_function
+        }
+
+        #[inline]
+        fn batch_range(&self) -> &Range<u32> {
+            &self.batch_range
+        }
+
+        #[inline]
+        fn batch_range_mut(&mut self) -> &mut Range<u32> {
+            &mut self.batch_range
+        }
+
+        #[inline]
+        fn dynamic_offset(&self) -> Option<NonMaxU32> {
+            self.dynamic_offset
+        }
+
+        #[inline]
+        fn dynamic_offset_mut(&mut self) -> &mut Option<NonMaxU32> {
+            &mut self.dynamic_offset
+        }
+    }
+    impl CachedRenderPipelinePhaseItem for ChunkDepthPhaseItem {
+        #[inline]
+        fn cached_pipeline(&self) -> CachedRenderPipelineId {
+            self.pipeline
         }
     }
 
@@ -455,9 +763,13 @@ mod render {
 
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn queue_material_meshes<M: Material>(
-        opaque_draw_functions: Res<DrawFunctions<Opaque3d>>,
+        depth_draw_functions: Res<DrawFunctions<ChunkDepthPhaseItem>>,
+        // render_draw_functions: Res<DrawFunctions<Opaque3d>>,
+        render_draw_functions: Res<DrawFunctions<ChunkRenderPhaseItem>>,
         material_pipeline: Res<ChunkPipeline>,
+        chunk_depth_pipeline: Res<ChunkDepthPipeline>,
         mut pipelines: ResMut<SpecializedMeshPipelines<ChunkPipeline>>,
+        mut chunk_depth_pipelines: ResMut<SpecializedMeshPipelines<ChunkDepthPipeline>>,
         pipeline_cache: Res<PipelineCache>,
         msaa: Res<Msaa>,
         render_meshes: Res<RenderAssets<Mesh>>,
@@ -472,7 +784,9 @@ mod render {
             Option<&Camera3d>,
             Option<&TemporalJitter>,
             Option<&Projection>,
-            &mut RenderPhase<Opaque3d>,
+            &mut RenderPhase<ChunkDepthPhaseItem>,
+            &mut RenderPhase<ChunkRenderPhaseItem>,
+            // &mut RenderPhase<Opaque3d>,
         )>,
     ) where
         M::Data: PartialEq + Eq + std::hash::Hash + Clone,
@@ -485,10 +799,12 @@ mod render {
             camera_3d,
             temporal_jitter,
             projection,
-            mut opaque_phase,
+            mut depth_phase,
+            mut render_phase,
         ) in &mut views
         {
-            let draw_opaque_pbr = opaque_draw_functions.read().id::<DrawMaterial<M>>();
+            let draw_depth = depth_draw_functions.read().id::<ChunkDepthPrepass<M>>();
+            let draw_render = render_draw_functions.read().id::<DrawMaterial<M>>();
 
             let mut view_key = MeshPipelineKey::from_msaa_samples(msaa.samples())
                 | MeshPipelineKey::from_hdr(view.hdr);
@@ -541,13 +857,27 @@ mod render {
                     mesh_key |= MeshPipelineKey::MORPH_TARGETS;
                 }
 
-                let pipeline_id = pipelines.specialize(
+                let render_pipeline_id = pipelines.specialize(
                     &pipeline_cache,
                     &material_pipeline,
                     mesh_key,
                     &mesh.layout,
                 );
-                let pipeline_id = match pipeline_id {
+                let render_pipeline_id = match render_pipeline_id {
+                    Ok(id) => id,
+                    Err(err) => {
+                        bevy::log::error!("{}", err);
+                        continue;
+                    }
+                };
+
+                let depth_pipeline_id = chunk_depth_pipelines.specialize(
+                    &pipeline_cache,
+                    &chunk_depth_pipeline,
+                    mesh_key,
+                    &mesh.layout,
+                );
+                let depth_pipeline_id = match depth_pipeline_id {
                     Ok(id) => id,
                     Err(err) => {
                         bevy::log::error!("{}", err);
@@ -561,10 +891,18 @@ mod render {
                     .distance_translation(&mesh_instance.transforms.transform.translation)
                     + material.properties.depth_bias;
 
-                opaque_phase.add(Opaque3d {
+                depth_phase.add(ChunkDepthPhaseItem {
                     entity: *visible_entity,
-                    draw_function: draw_opaque_pbr,
-                    pipeline: pipeline_id,
+                    draw_function: draw_depth,
+                    pipeline: depth_pipeline_id,
+                    distance,
+                    batch_range: 0..1,
+                    dynamic_offset: None,
+                });
+                render_phase.add(ChunkRenderPhaseItem {
+                    entity: *visible_entity,
+                    draw_function: draw_render,
+                    pipeline: render_pipeline_id,
                     distance,
                     batch_range: 0..1,
                     dynamic_offset: None,
@@ -623,6 +961,7 @@ mod render {
         images: Res<RenderAssets<Image>>,
         fallback_image: Res<FallbackImage>,
         pipeline: Res<ChunkPipeline>,
+        depth_pipeline: Res<ChunkDepthPipeline>,
     ) {
         let queued_assets = std::mem::take(&mut prepare_next_frame.assets);
         for (id, material) in queued_assets.into_iter() {
@@ -756,6 +1095,8 @@ mod render {
             layout: &MeshVertexBufferLayout,
         ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
             let mut desc = self.mesh_pipeline.specialize(key, layout)?;
+            // desc.primitive.cull_mode = Some(Face::Front);
+            desc.primitive.cull_mode = Some(Face::Back);
             desc.layout
                 .insert(1, self.material_bind_group_layout.clone());
             desc.layout.insert(3, self.world_bind_group_layout.clone());
@@ -763,14 +1104,156 @@ mod render {
             Ok(desc)
         }
     }
+    impl GetBatchData for ChunkPipeline {
+        type Param = SRes<RenderMeshInstances>;
+        type Query = Entity;
+        type QueryFilter = With<Mesh3d>;
+        type CompareData = (MaterialBindGroupId, AssetId<Mesh>);
+        type BufferData = MeshUniform;
 
+        fn get_batch_data(
+            mesh_instances: &SystemParamItem<Self::Param>,
+            entity: &QueryItem<Self::Query>,
+        ) -> (Self::BufferData, Option<Self::CompareData>) {
+            let mesh_instance = mesh_instances
+                .get(entity)
+                .expect("Failed to find render mesh instance");
+            (
+                (&mesh_instance.transforms).into(),
+                mesh_instance.automatic_batching.then_some((
+                    mesh_instance.material_bind_group_id,
+                    mesh_instance.mesh_asset_id,
+                )),
+            )
+        }
+    }
+    #[derive(Resource)]
+    pub struct ChunkDepthPipeline {
+        mesh_pipeline: MeshPipeline,
+        material_bind_group_layout: BindGroupLayout,
+        world_bind_group_layout: BindGroupLayout,
+        chunk_fragment_shader: Handle<Shader>,
+    }
+    impl FromWorld for ChunkDepthPipeline {
+        fn from_world(world: &mut bevy::prelude::World) -> Self {
+            let world_data = world.resource::<WorldData>();
+            let asset_server = world.resource::<AssetServer>();
+            let render_device = world.resource::<RenderDevice>();
+            let chunk_fragment_shader = asset_server.load("shaders/chunk.wgsl");
+            Self {
+                mesh_pipeline: world.resource::<MeshPipeline>().clone(),
+                world_bind_group_layout: world_data.bind_group_layout.clone(),
+                material_bind_group_layout: ChunkMaterial::bind_group_layout(render_device),
+                chunk_fragment_shader,
+            }
+        }
+    }
+    impl SpecializedMeshPipeline for ChunkDepthPipeline {
+        type Key = MeshPipelineKey;
+
+        fn specialize(
+            &self,
+            key: Self::Key,
+            layout: &MeshVertexBufferLayout,
+        ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+            let mut desc = self.mesh_pipeline.specialize(key, layout)?;
+            desc.primitive.cull_mode = Some(Face::Back);
+            desc.layout
+                .insert(1, self.material_bind_group_layout.clone());
+            // TODO: don't need this in depth prepass
+            desc.layout.insert(3, self.world_bind_group_layout.clone());
+            let frag = desc.fragment.as_mut().unwrap();
+            frag.shader = self.chunk_fragment_shader.clone();
+            frag.shader_defs.push("CHUNK_DEPTH_PREPASS".into());
+            Ok(desc)
+        }
+    }
+
+    // pub struct DrawMaterialRenderCommandState<
+    //     P: PhaseItem + 'static,
+    //     C: RenderCommand<P>,
+    //     C2: RenderCommand<P>,
+    // > {
+    //     state: SystemState<C::Param>,
+    //     view: QueryState<C::ViewWorldQuery>,
+    //     entity: QueryState<C::ItemWorldQuery>,
+    //     depth_pass_state: SystemState<C2::Param>,
+    //     depth_pass_view: QueryState<C2::ViewWorldQuery>,
+    //     depth_pass_entity: QueryState<C2::ItemWorldQuery>,
+    // }
+    // impl<P: PhaseItem, C: RenderCommand<P>, C2: RenderCommand<P>>
+    //     DrawMaterialRenderCommandState<P, C, C2>
+    // {
+    //     /// Creates a new [`RenderCommandState`] for the [`RenderCommand`].
+    //     pub fn new(world: &mut World) -> Self {
+    //         Self {
+    //             state: SystemState::new(world),
+    //             view: world.query(),
+    //             entity: world.query(),
+    //             depth_pass_state: SystemState::new(world),
+    //             depth_pass_view: world.query(),
+    //             depth_pass_entity: world.query(),
+    //         }
+    //     }
+    // }
+    // impl<
+    //         P: PhaseItem,
+    //         C: RenderCommand<P> + Send + Sync + 'static,
+    //         C2: RenderCommand<P> + Send + Sync + 'static,
+    //     > Draw<P> for DrawMaterialRenderCommandState<P, C, C2>
+    // where
+    //     C::Param: ReadOnlySystemParam,
+    //     C2::Param: ReadOnlySystemParam,
+    // {
+    //     /// Prepares the render command to be used. This is called once and only once before the phase
+    //     /// begins. There may be zero or more [`draw`](RenderCommandState::draw) calls following a call to this function.
+    //     fn prepare(&mut self, world: &'_ World) {
+    //         self.state.update_archetypes(world);
+    //         self.view.update_archetypes(world);
+    //         self.entity.update_archetypes(world);
+    //         self.depth_pass_state.update_archetypes(world);
+    //         self.depth_pass_view.update_archetypes(world);
+    //         self.depth_pass_entity.update_archetypes(world);
+    //     }
+
+    //     /// Fetches the ECS parameters for the wrapped [`RenderCommand`] and then renders it.
+    //     fn draw<'w>(
+    //         &mut self,
+    //         world: &'w World,
+    //         pass: &mut TrackedRenderPass<'w>,
+    //         view: Entity,
+    //         item: &P,
+    //     ) {
+    //         let param = self.depth_pass_state.get_manual(world);
+    //         let viewq = self.depth_pass_view.get_manual(world, view).unwrap();
+    //         let entity = self
+    //             .depth_pass_entity
+    //             .get_manual(world, item.entity())
+    //             .unwrap();
+    //         C2::render(item, viewq, entity, param, pass);
+
+    //         let param = self.state.get_manual(world);
+    //         let view = self.view.get_manual(world, view).unwrap();
+    //         let entity = self.entity.get_manual(world, item.entity()).unwrap();
+    //         C::render(item, view, entity, param, pass);
+    //     }
+    // }
+
+    type ChunkDepthPrepass<M> = (
+        SetItemPipeline,
+        SetMeshViewBindGroup<0>,
+        SetMaterialBindGroup<M, 1>,
+        SetMeshBindGroup<2>,
+        SetWorldBindGroup<3>,
+        DrawMeAMesh,
+    );
     type DrawMaterial<M> = (
         SetItemPipeline,
         SetMeshViewBindGroup<0>,
         SetMaterialBindGroup<M, 1>,
         SetMeshBindGroup<2>,
         SetWorldBindGroup<3>,
-        DrawMesh,
+        DrawMeAMesh,
     );
     struct SetWorldBindGroup<const I: usize>;
     impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetWorldBindGroup<I> {
@@ -794,10 +1277,53 @@ mod render {
             RenderCommandResult::Success
         }
     }
+    pub struct DrawMeAMesh;
+    impl<P: PhaseItem> RenderCommand<P> for DrawMeAMesh {
+        type Param = (SRes<RenderAssets<Mesh>>, SRes<RenderMeshInstances>);
+        type ViewWorldQuery = ();
+        type ItemWorldQuery = ();
+        #[inline]
+        fn render<'w>(
+            item: &P,
+            _view: (),
+            _item_query: (),
+            (meshes, mesh_instances): SystemParamItem<'w, '_, Self::Param>,
+            pass: &mut TrackedRenderPass<'w>,
+        ) -> RenderCommandResult {
+            let meshes = meshes.into_inner();
+            let mesh_instances = mesh_instances.into_inner();
+
+            let Some(mesh_instance) = mesh_instances.get(&item.entity()) else {
+                return RenderCommandResult::Failure;
+            };
+            let Some(gpu_mesh) = meshes.get(mesh_instance.mesh_asset_id) else {
+                return RenderCommandResult::Failure;
+            };
+
+            pass.set_vertex_buffer(0, gpu_mesh.vertex_buffer.slice(..));
+
+            let batch_range = item.batch_range();
+            match &gpu_mesh.buffer_info {
+                GpuBufferInfo::Indexed {
+                    buffer,
+                    index_format,
+                    count,
+                } => {
+                    pass.set_index_buffer(buffer.slice(..), 0, *index_format);
+                    pass.draw_indexed(0..*count, 0, batch_range.clone());
+                }
+                GpuBufferInfo::NonIndexed => {
+                    pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
+                }
+            }
+            RenderCommandResult::Success
+        }
+    }
 }
 
 mod chunk {
     use bevy::pbr::DefaultOpaqueRendererMethod;
+    use bevy::render::extract_component::ExtractComponent;
     use bevy::render::mesh::{Indices, VertexAttributeValues};
     use bevy::render::render_resource::{
         Extent3d, PrimitiveTopology, TextureDimension, TextureFormat,
@@ -1500,7 +2026,7 @@ mod chunk {
     }
 
     // - [AsBindGroup in bevy::render::render_resource - Rust](https://docs.rs/bevy/latest/bevy/render/render_resource/trait.AsBindGroup.html)
-    #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+    #[derive(Asset, TypePath, AsBindGroup, Debug, Clone, Component, ExtractComponent)]
     pub struct ChunkMaterial {
         #[uniform(0)]
         pub side: u32,
