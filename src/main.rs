@@ -271,23 +271,21 @@ mod render {
             let transient_world_texture_view =
                 transient_world_texture.create_view(&TextureViewDescriptor::default());
 
-            let depth_prepass_texture = render_device.create_texture_with_data(
-                render_queue,
+            let depth_prepass_texture = render_device.create_texture(
                 &TextureDescriptor {
                     label: Some("depth prepass texture"),
                     size: Extent3d {
-                        width: 1920,
-                        height: 1080,
+                        width: 1280,
+                        height: 720,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: TextureDimension::D2,
-                    format: TextureFormat::Rgba8Unorm,
+                    format: TextureFormat::R32Float,
                     usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
-                },
-                &[0; 1920 * 1080 * 4],
+                }
             );
             let depth_prepass_texture_view =
                 depth_prepass_texture.create_view(&TextureViewDescriptor {
@@ -424,8 +422,8 @@ mod render {
                 &TextureDescriptor {
                     label: Some("depth prepass depth stencil"),
                     size: Extent3d {
-                        width: 1920,
-                        height: 1080,
+                        width: 1280,
+                        height: 720,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -1227,9 +1225,9 @@ mod render {
             frag.shader = self.chunk_fragment_shader.clone();
             frag.shader_defs.push(ShaderDefVal::Bool("CHUNK_DEPTH_PREPASS".into(), true));
             frag.targets[0] = Some(ColorTargetState {
-                format: TextureFormat::Rgba8Unorm,
+                format: TextureFormat::R32Float,
                 blend: None,
-                write_mask: ColorWrites::all(),
+                write_mask: ColorWrites::RED,
             });
             Ok(desc)
         }
