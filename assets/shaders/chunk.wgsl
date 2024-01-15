@@ -224,6 +224,7 @@ fn mip5(march: vec3<f32>) -> bool {
 }
 
 const nudge_t: f32 = 0.01;
+const enable_depth_prepass: bool = true;
 
 // https://www.shadertoy.com/view/4dX3zl
 // http://www.cse.yorku.ca/~amana/research/grid.pdf
@@ -245,14 +246,22 @@ fn fragment(
     let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
     let ray_origin = world_data.player_pos.xyz;
     let ray_dir = normalize(mesh.world_position.xyz - ray_origin);
+    let backface_hit_pos = mesh.world_position.xyz;
     let voxel_size = chunk_size * 2.0 / f32(side);
     let chunk_center = chunk_pos;
 
     #ifdef CHUNK_DEPTH_PREPASS
+    if !enable_depth_prepass {
+        return vec4(0.0);
+    }
     #else
+    let depth_t = textureLoad(depth_texture, vec2<i32>(screen_uv * vec2(1280.0, 720.0)), 0).x;
+    if length(backface_hit_pos - ray_origin) < depth_t {
+        discard;
+    }
     if true {
         // return vec4(screen_uv, 0.0, 1.0);
-        return textureLoad(depth_texture, vec2<i32>(screen_uv * vec2(1920.0, 1080.0)), 0);
+        // return vec4(vec3(depth_t), 1.0);
     }
     #endif
 
@@ -271,7 +280,15 @@ fn fragment(
     let tmin = min(t1, t2);
 
     // if t is -ve, we want to march from the ray_origin instead. so clip it at 0.0
-    o += ray_dir * max(0.0, max(tmin.x, max(tmin.y, tmin.z)));
+    let t = max(0.0, max(tmin.x, max(tmin.y, tmin.z)));
+    o += ray_dir * t;
+
+    #ifdef CHUNK_DEPTH_PREPASS
+    #else
+    if enable_depth_prepass {
+        o = ray_origin + ray_dir * (depth_t - 0.0);
+    }
+    #endif
 
     // cache the hit position
     let ray_pos = o;
@@ -295,7 +312,7 @@ fn fragment(
     // var res = inline_no_mip_loop(o, ray_dir, step, dt);
 
     #ifdef CHUNK_DEPTH_PREPASS
-        res.color = vec4(1.0/(res.color.xyz*voxel_size + vec3(t)), 1.0);
+        res.color = vec4((res.color.xyz*voxel_size + vec3(t)), 1.0);
     #endif
 
     if res.hit {
