@@ -170,7 +170,7 @@ mod render {
             },
             world::{FromWorld, World},
         },
-        math::{UVec2, Vec2, Vec3},
+        math::{UVec2, UVec3, Vec2, Vec3},
         pbr::{
             AlphaMode, DrawMesh, EnvironmentMapLight, Material, MaterialBindGroupId,
             MaterialMeshBundle, MaterialProperties, Mesh3d, MeshFlags, MeshPipeline,
@@ -258,219 +258,10 @@ mod render {
         fn finish(&self, app: &mut bevy::prelude::App) {
             let render_device = app.world.resource::<RenderDevice>();
             let render_queue = app.world.resource::<RenderQueue>();
-
-            let transient_world_size = Extent3d {
-                width: 100,
-                height: 100,
-                depth_or_array_layers: 100,
-            };
-            let transient_world_texture = render_device.create_texture_with_data(
-                render_queue,
-                &TextureDescriptor {
-                    label: Some("transient world texture"),
-                    size: transient_world_size,
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: TextureDimension::D3,
-                    format: TextureFormat::R8Uint,
-                    usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST,
-                    view_formats: &[],
-                },
-                &[0; 100usize.pow(3)],
-            );
-            let transient_world_texture_view =
-                transient_world_texture.create_view(&TextureViewDescriptor::default());
-
-            let depth_prepass_texture = render_device.create_texture(&TextureDescriptor {
-                label: Some("depth prepass texture"),
-                size: Extent3d {
-                    width: 640,
-                    height: 360,
-                    // width: 853,
-                    // height: 480,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: TextureFormat::R32Float,
-                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            let depth_prepass_texture_view =
-                depth_prepass_texture.create_view(&TextureViewDescriptor {
-                    // aspect: TextureAspect::StencilOnly,
-                    ..Default::default()
-                });
-
-            // TODO: can use AsBindGroup to generate this boilerplate
-            let render_pass_bind_group_layout =
-                render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-                    label: Some("world data bind group"),
-                    entries: &[
-                        BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
-                            ty: BindingType::Buffer {
-                                ty: BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: BufferSize::new(
-                                    WorldDataUniforms::SHADER_SIZE.into(),
-                                ),
-                            },
-                            count: None,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
-                            ty: BindingType::StorageTexture {
-                                access: StorageTextureAccess::ReadWrite,
-                                format: TextureFormat::R8Uint,
-                                view_dimension: TextureViewDimension::D3,
-                            },
-                            count: None,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
-                            ty: BindingType::Texture {
-                                view_dimension: TextureViewDimension::D2,
-                                sample_type: TextureSampleType::Float { filterable: false },
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
-            let depth_pass_bind_group_layout =
-                render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-                    label: Some("depth pass bind group"),
-                    entries: &[
-                        BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
-                            ty: BindingType::Buffer {
-                                ty: BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: BufferSize::new(
-                                    WorldDataUniforms::SHADER_SIZE.into(),
-                                ),
-                            },
-                            count: None,
-                        },
-                        BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
-                            ty: BindingType::StorageTexture {
-                                access: StorageTextureAccess::ReadWrite,
-                                format: TextureFormat::R8Uint,
-                                view_dimension: TextureViewDimension::D3,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
-
-            let mut uniforms = UniformBuffer::from(WorldDataUniforms::default());
-            uniforms.write_buffer(render_device, render_queue);
-
-            let render_pass_bind_group = render_device.create_bind_group(
-                None,
-                &render_pass_bind_group_layout,
-                &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: uniforms.binding().unwrap(),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::TextureView(&transient_world_texture_view),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: BindingResource::TextureView(&depth_prepass_texture_view),
-                    },
-                ],
-            );
-            let depth_pass_bind_group = render_device.create_bind_group(
-                None,
-                &depth_pass_bind_group_layout,
-                &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: uniforms.binding().unwrap(),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::TextureView(&transient_world_texture_view),
-                    },
-                ],
-            );
-
-            // NOTE: i am assuming we need to have this image just so that we can reuse the rendering pipeline for
-            // voxelization. and we don't actually need this image's output. the real output will be done directly
-            // the 3d world texture
-            let transient_world_camera_target_image = Image {
-                texture_descriptor: TextureDescriptor {
-                    label: Some("transient world camera target"),
-                    size: Extent3d {
-                        depth_or_array_layers: 1,
-                        ..transient_world_size
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: TextureDimension::D2,
-                    format: TextureFormat::R8Unorm,
-                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[TextureFormat::R8Unorm],
-                },
-                data: vec![0; 100usize.pow(2)],
-                ..Default::default()
-            };
-
-            let depth_prepass_depth_stencil = render_device.create_texture(&TextureDescriptor {
-                label: Some("depth prepass depth stencil"),
-                size: Extent3d {
-                    width: 640,
-                    height: 360,
-                    // width: 853,
-                    // height: 480,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: TextureFormat::Depth32Float,
-                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let depth_prepass_depth_stencil_view =
-                depth_prepass_depth_stencil.create_view(&TextureViewDescriptor {
-                    // label: Some("depth prepass depth stencil view"),
-                    // format: Some(TextureFormat::Depth32Float),
-                    // dimension: None,
-                    // aspect: TextureAspect::DepthOnly,
-                    ..Default::default()
-                });
-
-            let mut images = app.world.resource_mut::<Assets<Image>>();
-            let transient_world_camera_target = images.add(transient_world_camera_target_image);
+            let world_data = WorldData::new_default(render_device, render_queue);
 
             let render_app = app.sub_app_mut(RenderApp);
-            render_app.insert_resource(WorldData {
-                render_pass_bind_group_layout,
-                render_pass_bind_group,
-                depth_pass_bind_group_layout,
-                depth_pass_bind_group,
-                transient_world_texture,
-                transient_world_texture_view,
-                transient_world_camera_target,
-                depth_prepass_texture,
-                depth_prepass_texture_view,
-                depth_prepass_depth_stencil,
-                depth_prepass_depth_stencil_view,
-                uniforms,
-            });
+            render_app.insert_resource(world_data);
             render_app.init_resource::<WorldDataUniforms>();
         }
     }
@@ -479,19 +270,289 @@ mod render {
     struct WorldData {
         render_pass_bind_group_layout: BindGroupLayout,
         render_pass_bind_group: BindGroup,
+
         depth_pass_bind_group_layout: BindGroupLayout,
         depth_pass_bind_group: BindGroup,
-
-        transient_world_texture: Texture,
-        transient_world_texture_view: TextureView,
-        transient_world_camera_target: Handle<Image>,
-
+        // render the depth here to be used by other shaders
+        // it is needed for fragment shader. only depth stencil can't have fragment shader
         depth_prepass_texture: Texture,
         depth_prepass_texture_view: TextureView,
+        // depth stencil to allow more efficient rendering of chunk cubes (z buffer tests)
         depth_prepass_depth_stencil: Texture,
         depth_prepass_depth_stencil_view: TextureView,
 
+        // TODO:
+        transient_world_texture: Texture,
+        transient_world_texture_view: TextureView,
+        // NOTE: i am assuming we need to have this image just so that we can reuse the rendering pipeline for
+        // voxelization. and we don't actually need this image's output. the real output will be done directly
+        // the 3d world texture
+        voxelizer_camera_target: Texture,
+        voxelizer_camera_target_view: TextureView,
+
         uniforms: UniformBuffer<WorldDataUniforms>,
+    }
+    impl WorldData {
+        fn new_default(render_device: &RenderDevice, render_queue: &RenderQueue) -> Self {
+            let render_pass_bind_group_layout =
+                WorldData::render_pass_bind_group_layout(render_device);
+            let depth_pass_bind_group_layout =
+                WorldData::depth_pass_bind_group_layout(render_device);
+            let transient_world_texture =
+                Self::transient_world_texture(render_device, Default::default());
+            let transient_world_view =
+                transient_world_texture.create_view(&TextureViewDescriptor::default());
+            let depth_stencil_texture =
+                Self::depth_pass_depth_stencil(render_device, Default::default());
+            let depth_stencil_view =
+                depth_stencil_texture.create_view(&TextureViewDescriptor::default());
+            let depth_pass_texture = Self::depth_pass_texture(render_device, Default::default());
+            let depth_pass_target_view =
+                depth_stencil_texture.create_view(&TextureViewDescriptor::default());
+            let voxelizer_camera_target =
+                Self::voxelizer_camera_target(render_device, Default::default());
+            let voxelizer_target_view =
+                voxelizer_camera_target.create_view(&TextureViewDescriptor::default());
+
+            let mut uniforms = UniformBuffer::from(WorldDataUniforms::default());
+            uniforms.write_buffer(render_device, render_queue);
+            Self {
+                render_pass_bind_group: render_device.create_bind_group(
+                    Some("chunk render pass bind group"),
+                    &render_pass_bind_group_layout,
+                    &[
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: uniforms.binding().unwrap(),
+                        },
+                        BindGroupEntry {
+                            binding: 1,
+                            resource: BindingResource::TextureView(&transient_world_view),
+                        },
+                        BindGroupEntry {
+                            binding: 2,
+                            resource: BindingResource::TextureView(&depth_pass_target_view),
+                        },
+                    ],
+                ),
+                render_pass_bind_group_layout,
+                depth_pass_bind_group: render_device.create_bind_group(
+                    Some("depth prepass bind group"),
+                    &depth_pass_bind_group_layout,
+                    &[
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: uniforms.binding().unwrap(),
+                        },
+                        BindGroupEntry {
+                            binding: 1,
+                            resource: BindingResource::TextureView(&transient_world_view),
+                        },
+                    ],
+                ),
+                depth_pass_bind_group_layout,
+                depth_prepass_texture: depth_pass_texture,
+                depth_prepass_texture_view: depth_pass_target_view,
+                depth_prepass_depth_stencil: depth_stencil_texture,
+                depth_prepass_depth_stencil_view: depth_stencil_view,
+                transient_world_texture,
+                transient_world_texture_view: transient_world_view,
+                voxelizer_camera_target,
+                voxelizer_camera_target_view: voxelizer_target_view,
+                uniforms,
+            }
+        }
+
+        fn update(
+            &mut self,
+            render_device: &RenderDevice,
+            render_queue: &RenderQueue,
+            uniforms: &WorldDataUniforms,
+        ) {
+            if self.uniforms.get().screen_resolution != uniforms.screen_resolution {
+                self.resize_depth_prepass(
+                    render_device,
+                    Extent3d {
+                        width: uniforms.screen_resolution.x / uniforms.depth_prepass_scale_factor
+                            + (uniforms.screen_resolution.x % uniforms.depth_prepass_scale_factor
+                                > 0) as u32,
+                        height: uniforms.screen_resolution.y / uniforms.depth_prepass_scale_factor
+                            + (uniforms.screen_resolution.y % uniforms.depth_prepass_scale_factor
+                                > 0) as u32,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+
+            self.uniforms.set(uniforms.clone());
+            self.uniforms.write_buffer(render_device, render_queue);
+
+            let bind_group = render_device.create_bind_group(
+                Some("world data bind group"),
+                &self.render_pass_bind_group_layout,
+                &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniforms.binding().unwrap(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&self.transient_world_texture_view),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&self.depth_prepass_texture_view),
+                    },
+                ],
+            );
+            self.render_pass_bind_group = bind_group;
+
+            let bind_group = render_device.create_bind_group(
+                Some("world data bind group"),
+                &self.depth_pass_bind_group_layout,
+                &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniforms.binding().unwrap(),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::TextureView(&self.transient_world_texture_view),
+                    },
+                ],
+            );
+            self.depth_pass_bind_group = bind_group;
+        }
+
+        fn resize_depth_prepass(&mut self, render_device: &RenderDevice, size: Extent3d) {
+            self.depth_prepass_texture = Self::depth_pass_texture(render_device, size);
+            self.depth_prepass_texture_view = self
+                .depth_prepass_texture
+                .create_view(&TextureViewDescriptor::default());
+            self.depth_prepass_depth_stencil = Self::depth_pass_depth_stencil(render_device, size);
+            self.depth_prepass_depth_stencil_view = self
+                .depth_prepass_depth_stencil
+                .create_view(&TextureViewDescriptor::default());
+        }
+
+        fn transient_world_texture(render_device: &RenderDevice, size: Extent3d) -> Texture {
+            render_device.create_texture(&TextureDescriptor {
+                label: Some("transient world texture"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D3,
+                format: TextureFormat::R8Uint,
+                usage: TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        }
+        fn voxelizer_camera_target(render_device: &RenderDevice, size: Extent3d) -> Texture {
+            render_device.create_texture(&TextureDescriptor {
+                label: Some("transient world camera target"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::R8Unorm,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[TextureFormat::R8Unorm],
+            })
+        }
+
+        // TODO: can use AsBindGroup to generate this boilerplate
+        fn render_pass_bind_group_layout(render_device: &RenderDevice) -> BindGroupLayout {
+            render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("world data bind group"),
+                entries: &[
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: BufferSize::new(
+                                WorldDataUniforms::SHADER_SIZE.into(),
+                            ),
+                        },
+                        count: None,
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                        ty: BindingType::StorageTexture {
+                            access: StorageTextureAccess::ReadWrite,
+                            format: TextureFormat::R8Uint,
+                            view_dimension: TextureViewDimension::D3,
+                        },
+                        count: None,
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                        ty: BindingType::Texture {
+                            view_dimension: TextureViewDimension::D2,
+                            sample_type: TextureSampleType::Float { filterable: false },
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
+            })
+        }
+        fn depth_pass_bind_group_layout(render_device: &RenderDevice) -> BindGroupLayout {
+            render_device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+                label: Some("depth pass bind group"),
+                entries: &[
+                    BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                        ty: BindingType::Buffer {
+                            ty: BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: BufferSize::new(
+                                WorldDataUniforms::SHADER_SIZE.into(),
+                            ),
+                        },
+                        count: None,
+                    },
+                    BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                        ty: BindingType::StorageTexture {
+                            access: StorageTextureAccess::ReadWrite,
+                            format: TextureFormat::R8Uint,
+                            view_dimension: TextureViewDimension::D3,
+                        },
+                        count: None,
+                    },
+                ],
+            })
+        }
+        fn depth_pass_texture(render_device: &RenderDevice, size: Extent3d) -> Texture {
+            render_device.create_texture(&TextureDescriptor {
+                label: Some("depth prepass texture"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::R32Float,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            })
+        }
+        fn depth_pass_depth_stencil(render_device: &RenderDevice, size: Extent3d) -> Texture {
+            render_device.create_texture(&TextureDescriptor {
+                label: Some("depth prepass depth stencil"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Depth32Float,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        }
     }
 
     #[derive(Default, Debug, Clone, ShaderType, Resource)]
@@ -523,8 +584,9 @@ mod render {
             depth_prepass_scale_factor: u32,
         ) -> Self {
             let theta = fov as f64;
-            let t =
-                (resolution.x as f64 / depth_prepass_scale_factor as f64) * (1.0 / (theta / 2.0).tan()) * (1.0 / (2.0 * 2.0f64.sqrt()));
+            let t = (resolution.x as f64 / depth_prepass_scale_factor as f64)
+                * (1.0 / (theta / 2.0).tan())
+                * (1.0 / (2.0 * 2.0f64.sqrt()));
             Self {
                 player_pos,
                 screen_resolution: resolution,
@@ -837,7 +899,7 @@ mod render {
             player.translation(),
             UVec2::new(width, height),
             projection.fov,
-            8,
+            4,
         ));
     }
 
@@ -847,50 +909,7 @@ mod render {
         render_device: Res<RenderDevice>,
         render_queue: Res<RenderQueue>,
     ) {
-        world_data.uniforms.set(world_data_uniforms.clone());
-        world_data
-            .uniforms
-            .write_buffer(&render_device, &render_queue);
-
-        let bind_group = render_device.create_bind_group(
-            Some("world data bind group"),
-            &world_data.render_pass_bind_group_layout,
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: world_data.uniforms.binding().unwrap(),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::TextureView(
-                        &world_data.transient_world_texture_view,
-                    ),
-                },
-                BindGroupEntry {
-                    binding: 2,
-                    resource: BindingResource::TextureView(&world_data.depth_prepass_texture_view),
-                },
-            ],
-        );
-        world_data.render_pass_bind_group = bind_group;
-
-        let bind_group = render_device.create_bind_group(
-            Some("world data bind group"),
-            &world_data.depth_pass_bind_group_layout,
-            &[
-                BindGroupEntry {
-                    binding: 0,
-                    resource: world_data.uniforms.binding().unwrap(),
-                },
-                BindGroupEntry {
-                    binding: 1,
-                    resource: BindingResource::TextureView(
-                        &world_data.transient_world_texture_view,
-                    ),
-                },
-            ],
-        );
-        world_data.depth_pass_bind_group = bind_group;
+        world_data.update(&render_device, &render_queue, &world_data_uniforms);
     }
 
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1269,7 +1288,6 @@ mod render {
             desc.primitive.cull_mode = Some(Face::Back);
             desc.layout
                 .insert(1, self.material_bind_group_layout.clone());
-            // TODO: don't need this in depth prepass
             desc.layout.insert(3, self.world_bind_group_layout.clone());
             let frag = desc.fragment.as_mut().unwrap();
             frag.shader = self.chunk_fragment_shader.clone();

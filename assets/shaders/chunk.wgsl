@@ -172,7 +172,12 @@ fn mip5(march: vec3<f32>) -> bool {
 
 fn get_prepass_depth(uv: vec2<f32>) -> f32 {
     // let index = vec2<i32>(uv * vec2(853.0, 480.0));
-    let index = vec2<i32>(uv * vec2(640.0, 360.0));
+    // let index = vec2<i32>(uv * vec2(640.0, 360.0));
+    let index = vec2<i32>(
+        uv *
+        (vec2<f32>(world_data.screen_resolution / world_data.depth_prepass_scale_factor) +
+        vec2<f32>(world_data.screen_resolution % world_data.depth_prepass_scale_factor > 0u))
+    );
     var t = textureLoad(depth_texture, index, 0).x;
     if true {
         // return t;
