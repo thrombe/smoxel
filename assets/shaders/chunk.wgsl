@@ -39,20 +39,12 @@ fn get_color(index: u32) -> vec4<f32> {
 
 
 fn get_mip1(pos: vec3<f32>) -> vec2<u32> {
-    if (any(pos >= f32(side) || pos < 0.0)) {
-        return vec2<u32>(0u);
-    }
-
     var coords = vec3<u32>(pos);
     var voxel = textureLoad(voxels_mip1, coords/4u, 0);
     // return vec4<u32>(voxel.x & 31u, voxel.x >> 16u, voxel.y & 31u, voxel.y >> 16u);
     return voxel.xy;
 }
 fn get_mip2(pos: vec3<f32>) -> vec2<u32> {
-    if (any(pos >= f32(side) || pos < 0.0)) {
-        return vec2<u32>(0u);
-    }
-
     var coords = vec3<u32>(pos);
     var voxel = textureLoad(voxels_mip2, coords/(4u * 8u), 0);
     return voxel.xy;
@@ -68,11 +60,6 @@ struct Mip {
 }
 
 fn getMipByte(mip: vec2<u32>, index: u32) -> u32 {
-    // if (index == 5u) {
-    //     return 1u;
-    // } else {
-    //     return 0u;
-    // }
     var component = 0u;
     switch (index) {
         case 0u {
@@ -111,45 +98,7 @@ fn getMipBit(mip: u32, index: u32) -> u32 {
     return mip & mask;
 }
 
-// fn unpackMipBytes(mip: vec2<u32>, level: u32) -> array<u32, 8> {
-//     switch (level) {
-//         case 0u { // v1<u8> -> v8<u1>
-//             let b1 = (mip.x >> vec4<u32>(0u, 1u, 2u, 3u)) & 1u;
-//             let b2 = (mip.x >> vec4<u32>(4u, 5u, 6u, 7u)) & 1u;
-//             let b1 = (mip.x >> vec4<u32>(0u, 1u, 2u, 3u)) & 1u;
-//             let b2 = (mip.x >> vec4<u32>(4u, 5u, 6u, 7u)) & 1u;
-//             return array(b1.x, b1.y, b1.z, b1.w, b2.x, b2.y, b2.z, b2.w);
-//         }
-//         case 1u { // v2<
-//             let b1 = (box >> vec4<u32>(0u, 1u, 2u, 3u) * 8u) & 15u;
-//             let b2 = (box >> vec4<u32>(4u, 5u, 6u, 7u)) & 15u;
-//             return array(b1.x, b1.y, b1.z, b1.w, b2.x, b2.y, b2.z, b2.w);
-//         }
-//         case 2u {
-//             // return mat2x4(0u);
-//         }
-//         default {
-//             // return mat2x4(0u);
-//         }
-//     }
-//     return array(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
-// }
-
-fn get_bytemasks() -> array<u32, 4> {return array(15u, 15u << 8u, 15u << 16u, 15u << 24u);}
-fn get_bitmasks() -> array<u32, 8> {
-    return array(
-        1u | 1u << 8u | 1u << 16u | 1u << 24u,
-        2u | 2u << 8u | 2u << 16u | 2u << 24u,
-        4u | 4u << 8u | 4u << 16u | 4u << 24u,
-        8u | 8u << 8u | 8u << 16u | 8u << 24u,
-        16u | 16u << 8u | 16u << 16u | 16u << 24u,
-        32u | 32u << 8u | 32u << 16u | 32u << 24u,
-        64u | 64u << 8u | 64u << 16u | 64u << 24u,
-        128u | 128u << 8u | 128u << 16u | 128u << 24u,
-    );
-}
-
-fn get_voxel_unckecked(pos: vec3<i32>) -> u32 {
+fn get_voxel_unchecked(pos: vec3<i32>) -> u32 {
     var coords = pos;
     let xyzw = coords.x % 4;
     coords.x /= 4;
@@ -266,17 +215,13 @@ fn fragment(
     var out: Output;
 
     if (true) {
-        // let v1 = get_mip1(vec3<f32>(0.01));
-        // let v2 = get_mip2(vec3<f32>(0.01));
-        // return vec4<f32>(f32(v1.x + v2.x));
-        // return vec4<f32>(1.0);
         // return vec4<f32>((mesh.world_position.xyz - chunk_pos)/1000.0, 1.0);
         // return vec4<f32>(mesh.uv, 0.0, 1.0);
     }
     let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
     let ray_origin = world_data.player_pos.xyz;
-    let ray_dir = normalize(mesh.world_position.xyz - ray_origin);
     let backface_hit_pos = mesh.world_position.xyz;
+    let ray_dir = normalize(backface_hit_pos - ray_origin);
     let voxel_size = chunk_size * 2.0 / f32(side);
     let chunk_center = chunk_pos;
 
@@ -301,17 +246,17 @@ fn fragment(
 
     // https://gamedev.stackexchange.com/a/18459
     // we know the ray hits, so we skip the 2 checks for ray not hitting the box
-    let lowest = chunk_center - chunk_size;
-    let highest = chunk_center + chunk_size;
-    let t1 = (lowest - o)*dt;
-    let t2 = (highest - o)*dt;
+    let v1 = chunk_center - chunk_size;
+    let v2 = chunk_center + chunk_size;
+    let t1 = (v1 - o)*dt;
+    let t2 = (v2 - o)*dt;
     let tmin = min(t1, t2);
 
     // if t is -ve, we want to march from the ray_origin instead. so clip it at 0.0
     let t = max(0.0, max(tmin.x, max(tmin.y, tmin.z)));
-    o += ray_dir * t;
 
     #ifdef CHUNK_DEPTH_PREPASS
+        o = ray_origin + ray_dir * t;
     #else
     if enable_depth_prepass {
         o = ray_origin + ray_dir * (max(depth_t - 0.000, t));
@@ -335,13 +280,12 @@ fn fragment(
 
     // we only want the magnitude of dt for marching
     dt = abs(dt);
-    // dt = normalize(dt);
     // origin wrt chunk's origin
     o -= (chunk_center - chunk_size);
     // make each voxel of size 1
     o /= voxel_size;
 
-    var stepi = vec3<i32>(step);
+    var stepi = vec3<i32>(ray_dir >= 0.0) - vec3<i32>(ray_dir < 0.0);
     var step = vec3<f32>(stepi);
     #ifdef CHUNK_DEPTH_PREPASS
         var res = mip5_loop_final(o, ray_dir, step, stepi, dt);
@@ -607,8 +551,7 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
 
     var o = _o + ray_dir * nudge_t;
     // current voxel position (offset to center of the voxel)
-    var march = floor(o) + 0.5;
-    var marchi = vec3<i32>(march);
+    var marchi = vec3<i32>(floor(o) + 0.5);
 
     // how much t untill we hit a plane along this axis
     var t = (step * (0.5 - fract(o/4.0)) + 0.5) * dt * 4.0;
@@ -617,7 +560,7 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
         if any(marchi >= i32(side) || marchi < 0) {
             break;
         }
-        var mip = get_mip1(march);
+        var mip = get_mip1_unchecked(marchi);
         if any(mip > 0u) {
             let res = mip1_loop(o, ray_dir, step, stepi, dt, last_t + nudge_t, mip);
             if res.hit {
@@ -628,7 +571,6 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
         let mask = vec3<f32>(maski);
         last_t = min(t.x, min(t.y, t.z));
         t += mask * dt * 4.0;
-        march += mask * step * 4.0;
         marchi += maski * stepi * 4;
     }
     
@@ -727,21 +669,20 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
         let voxel = getMipBit(comp, index);
         if voxel > 0u {
             #ifdef CHUNK_DEPTH_PREPASS
-                if true {
-                    res.color = vec4(vec3(_last_t + last_t), 1.0);
+                res.color = vec4(vec3(_last_t + last_t), 1.0);
+                res.hit = true;
+                res.t = _last_t + last_t;
+                return res;
+            #else
+                let voxel = get_voxel_unchecked(marchi + mod2);
+                // check again cux of precision issues ig :/
+                if voxel > 0u {
+                    res.color = get_color(voxel);
                     res.hit = true;
                     res.t = _last_t + last_t;
                     return res;
                 }
             #endif
-            let voxel = get_voxel_unckecked(marchi + mod2);
-            // check again cux of precision issues ig :/
-            if voxel > 0u {
-                res.color = get_color(voxel);
-                res.hit = true;
-                res.t = _last_t + last_t;
-                return res;
-            }
         }
         let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
         last_t = min(t.x, min(t.y, t.z));
