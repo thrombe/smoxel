@@ -275,8 +275,10 @@ mod render {
                 &TextureDescriptor {
                     label: Some("depth prepass texture"),
                     size: Extent3d {
-                        width: 1280,
-                        height: 720,
+                        width: 640,
+                        height: 360,
+                        // width: 853,
+                        // height: 480,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -422,8 +424,10 @@ mod render {
                 &TextureDescriptor {
                     label: Some("depth prepass depth stencil"),
                     size: Extent3d {
-                        width: 1280,
-                        height: 720,
+                        width: 640,
+                        height: 360,
+                        // width: 853,
+                        // height: 480,
                         depth_or_array_layers: 1,
                     },
                     mip_level_count: 1,
@@ -844,7 +848,6 @@ mod render {
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn queue_material_meshes<M: Material>(
         depth_draw_functions: Res<DrawFunctions<ChunkDepthPhaseItem>>,
-        // render_draw_functions: Res<DrawFunctions<Opaque3d>>,
         render_draw_functions: Res<DrawFunctions<ChunkRenderPhaseItem>>,
         material_pipeline: Res<ChunkPipeline>,
         chunk_depth_pipeline: Res<ChunkDepthPipeline>,
@@ -866,7 +869,6 @@ mod render {
             Option<&Projection>,
             &mut RenderPhase<ChunkDepthPhaseItem>,
             &mut RenderPhase<ChunkRenderPhaseItem>,
-            // &mut RenderPhase<Opaque3d>,
         )>,
     ) where
         M::Data: PartialEq + Eq + std::hash::Hash + Clone,

@@ -223,8 +223,36 @@ fn mip5(march: vec3<f32>) -> bool {
     return any(mip > 0u);
 }
 
-const nudge_t: f32 = 0.01;
+fn get_prepass_depth(uv: vec2<f32>) -> f32 {
+    // let index = vec2<i32>(uv * vec2(853.0, 480.0));
+    let index = vec2<i32>(uv * vec2(640.0, 360.0));
+    var t = textureLoad(depth_texture, index, 0).x;
+    if true {
+        // return t;
+    }
+    t = min(t, textureLoad(depth_texture, index + vec2(-1, 0), 0).x);
+    t = min(t, textureLoad(depth_texture, index + vec2(1, 0), 0).x);
+    t = min(t, textureLoad(depth_texture, index + vec2(0, -1), 0).x);
+    t = min(t, textureLoad(depth_texture, index + vec2(0, 1), 0).x);
+    t = min(t, textureLoad(depth_texture, index + vec2(1, 1), 0).x);
+    t = min(t, textureLoad(depth_texture, index + vec2(-1, -1), 0).x);
+    t = min(t, textureLoad(depth_texture, index + vec2(-1, 1), 0).x);
+    t = min(t, textureLoad(depth_texture, index + vec2(1, -1), 0).x);
+    return t;
+}
+
+// fn resolution_is_enouugh(t: f32) -> bool
+
+struct Output {
+    @location(0) color: vec4<f32>,
+    #ifdef CHUNK_DEPTH_PREPASS
+        @builtin(frag_depth) depth: f32,
+    #endif
+}
+
+const nudge_t: f32 = 0.0005;
 const enable_depth_prepass: bool = true;
+// const enable_depth_prepass: bool = false;
 
 // https://www.shadertoy.com/view/4dX3zl
 // http://www.cse.yorku.ca/~amana/research/grid.pdf
@@ -234,14 +262,16 @@ const enable_depth_prepass: bool = true;
 @fragment
 fn fragment(
     mesh: VertexOutput,
-) -> @location(0) vec4<f32> {
-    if (1.0 > 0.0) {
+) -> Output {
+    var out: Output;
+
+    if (true) {
         // let v1 = get_mip1(vec3<f32>(0.01));
         // let v2 = get_mip2(vec3<f32>(0.01));
         // return vec4<f32>(f32(v1.x + v2.x));
         // return vec4<f32>(1.0);
         // return vec4<f32>((mesh.world_position.xyz - chunk_pos)/1000.0, 1.0);
-        // return vec4<f32>(mesh.uv, 1.0, 1.0);
+        // return vec4<f32>(mesh.uv, 0.0, 1.0);
     }
     let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
     let ray_origin = world_data.player_pos.xyz;
@@ -251,18 +281,16 @@ fn fragment(
     let chunk_center = chunk_pos;
 
     #ifdef CHUNK_DEPTH_PREPASS
-    if !enable_depth_prepass {
-        return vec4(0.0);
-    }
+        if !enable_depth_prepass {
+            out.color = vec4(0.0);
+            out.depth = 1.0;
+            return out;
+        }
     #else
-    let depth_t = textureLoad(depth_texture, vec2<i32>(screen_uv * vec2(1280.0, 720.0)), 0).x;
-    if length(backface_hit_pos - ray_origin) < depth_t {
-        discard;
-    }
-    if true {
-        // return vec4(screen_uv, 0.0, 1.0);
-        // return vec4(vec3(depth_t), 1.0);
-    }
+        let depth_t = get_prepass_depth(screen_uv);
+        if length(backface_hit_pos - ray_origin) < depth_t {
+            discard;
+        }
     #endif
 
     // calculate ray hit pos
@@ -286,7 +314,16 @@ fn fragment(
     #ifdef CHUNK_DEPTH_PREPASS
     #else
     if enable_depth_prepass {
-        o = ray_origin + ray_dir * (depth_t - 0.0);
+        o = ray_origin + ray_dir * (max(depth_t - 0.000, t));
+        // o = ray_origin + ray_dir * (depth_t + 0.000);
+
+        // out.color = vec4(vec3(depth_t/10.0), 1.0);
+        // out.color = vec4(vec3(50.0/t), 1.0);
+        // out.color = vec4(vec3(depth_t - t)/100.0, 1.0);
+        // out.color = vec4(vec3(max(depth_t, t))/1000.0, 1.0);
+        // out.color = vec4(vec3(depth_t)/1000.0, 1.0);
+        // out.color = vec4(vec3(50.0/depth_t), 1.0);
+        // return out;
     }
     #endif
 
@@ -300,31 +337,46 @@ fn fragment(
     dt = abs(dt);
     // dt = normalize(dt);
     // origin wrt chunk's origin
-    o -= (chunk_pos - chunk_size);
+    o -= (chunk_center - chunk_size);
     // make each voxel of size 1
     o /= voxel_size;
 
-    var step = sign(ray_dir);
     var stepi = vec3<i32>(step);
-    var res = mip5_loop_final(o, ray_dir, step, stepi, dt);
-    // var res = mip2_loop_final(o, ray_dir, step, stepi, dt);
+    var step = vec3<f32>(stepi);
+    #ifdef CHUNK_DEPTH_PREPASS
+        var res = mip5_loop_final(o, ray_dir, step, stepi, dt);
+    #else
+        var res = mip2_loop_final(o, ray_dir, step, stepi, dt);
+    #endif
     // var res = inline_mip2_loop(o, ray_dir, step, stepi, dt);
     // var res = inline_no_mip_loop(o, ray_dir, step, dt);
+    res.t *= voxel_size;
+    res.t += t;
 
     #ifdef CHUNK_DEPTH_PREPASS
-        res.color = vec4((res.color.xyz*voxel_size + vec3(t)), 1.0);
+        out.color = vec4(vec3(res.t), 1.0);
+        out.depth = 1.0/res.t;
+    #else
+        out.color = res.color;
     #endif
 
     if res.hit {
-        return res.color;
+        return out;
     }
 
-    discard;
+    #ifdef CHUNK_DEPTH_PREPASS
+        out.color = vec4(100000000.0);
+        out.depth = 0.000001;
+        return out;
+    #else
+        discard;
+    #endif
 }
 
 struct MipResult {
     color: vec4<f32>,
     hit: bool,
+    t: f32,
 }
 
 fn inline_no_mip_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, dt: vec3<f32>) -> MipResult {
@@ -362,7 +414,7 @@ fn inline_mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: v
     res.hit = false;
     res.color = vec4(0.0);
 
-    var o = _o + ray_dir * 0.02;
+    var o = _o + ray_dir * 0.001;
     // current voxel position (offset to center of the voxel)
     var march = floor(o) + 0.5;
     var marchi = vec3<i32>(march);
@@ -458,7 +510,8 @@ fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: v
     var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < lim * 3 - 2; i += 1) {
-        if any(marchi >= i32(side) || marchi < 0) {
+        // TODO: figure out why this should not be '>='
+        if any(marchi > i32(side) || marchi < 0) {
             break;
         }
         var mip = get_mip2_unckecked(marchi);
@@ -677,6 +730,7 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
                 if true {
                     res.color = vec4(vec3(_last_t + last_t), 1.0);
                     res.hit = true;
+                    res.t = _last_t + last_t;
                     return res;
                 }
             #endif
@@ -685,6 +739,7 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
             if voxel > 0u {
                 res.color = get_color(voxel);
                 res.hit = true;
+                res.t = _last_t + last_t;
                 return res;
             }
         }
