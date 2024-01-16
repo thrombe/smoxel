@@ -135,6 +135,7 @@ enum ControlsState {
 }
 
 mod render {
+    use core::panic;
     use std::{cmp::Reverse, ops::Range};
 
     use bevy::{
@@ -145,7 +146,10 @@ mod render {
             clear_color::ClearColorConfig,
             core_3d::{
                 self,
-                graph::{input::VIEW_ENTITY, node::{MAIN_OPAQUE_PASS, START_MAIN_PASS, END_MAIN_PASS}},
+                graph::{
+                    input::VIEW_ENTITY,
+                    node::{END_MAIN_PASS, MAIN_OPAQUE_PASS, START_MAIN_PASS},
+                },
                 AlphaMask3d, Camera3d, Camera3dBundle, Opaque3d, ScreenSpaceTransmissionQuality,
                 Transmissive3d, Transparent3d, CORE_3D,
             },
@@ -169,19 +173,24 @@ mod render {
         math::{UVec2, Vec2, Vec3},
         pbr::{
             AlphaMode, DrawMesh, EnvironmentMapLight, Material, MaterialBindGroupId,
-            MaterialMeshBundle, MaterialProperties, MeshFlags, MeshPipeline, MeshPipelineKey,
-            MeshPipelineViewLayoutKey, MeshTransforms, OpaqueRendererMethod, PreparedMaterial,
-            RenderMaterialInstances, RenderMaterials, RenderMeshInstance, RenderMeshInstances,
+            MaterialMeshBundle, MaterialProperties, Mesh3d, MeshFlags, MeshPipeline,
+            MeshPipelineKey, MeshPipelineViewLayoutKey, MeshTransforms, MeshUniform,
+            OpaqueRendererMethod, PreparedMaterial, PrepassPipelinePlugin, RenderMaterialInstances,
+            RenderMaterials, RenderMeshInstance, RenderMeshInstances,
             ScreenSpaceAmbientOcclusionSettings, SetMaterialBindGroup, SetMeshBindGroup,
-            SetMeshViewBindGroup, ShadowFilteringMethod, PrepassPipelinePlugin, Mesh3d, MeshUniform,
+            SetMeshViewBindGroup, ShadowFilteringMethod,
         },
         reflect::Reflect,
         render::{
-            camera::{
-                Camera, CameraRenderGraph, OrthographicProjection, Projection, RenderTarget,
-                ScalingMode, TemporalJitter, ExtractedCamera,
+            batching::{
+                batch_and_prepare_render_phase, write_batched_instance_buffer, GetBatchData,
             },
-            extract_component::{ExtractComponent, ExtractComponentPlugin, ComponentUniforms},
+            camera::{
+                Camera, CameraRenderGraph, ExtractedCamera, OrthographicProjection,
+                PerspectiveProjection, Projection, RenderTarget, ScalingMode, TemporalJitter,
+            },
+            color::Color,
+            extract_component::{ComponentUniforms, ExtractComponent, ExtractComponentPlugin},
             extract_instances::ExtractInstancesPlugin,
             extract_resource::{ExtractResource, ExtractResourcePlugin},
             main_graph::node::CAMERA_DRIVER,
@@ -196,29 +205,30 @@ mod render {
                 ViewNode, ViewNodeRunner,
             },
             render_phase::{
-                AddRenderCommand, CachedRenderPipelinePhaseItem, Draw, DrawFunctionId,
-                DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult, RenderPhase,
-                SetItemPipeline, TrackedRenderPass, sort_phase_system,
+                sort_phase_system, AddRenderCommand, CachedRenderPipelinePhaseItem, Draw,
+                DrawFunctionId, DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult,
+                RenderPhase, SetItemPipeline, TrackedRenderPass,
             },
             render_resource::{
-                AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntry, BindGroupLayout,
-                BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
+                AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntries, BindGroupEntry,
+                BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
                 BindingType::{self, StorageTexture},
-                BufferBindingType, BufferSize, CachedRenderPipelineId, Extent3d, Operations,
-                PipelineCache, PrimitiveTopology, RenderPassDepthStencilAttachment,
-                RenderPassDescriptor, RenderPipelineDescriptor, Shader, ShaderSize, ShaderStages,
-                ShaderType, SpecializedMeshPipeline, SpecializedMeshPipelineError,
-                SpecializedMeshPipelines, StorageTextureAccess, Texture, TextureDescriptor,
-                TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
-                TextureViewDimension, UniformBuffer, LoadOp, BindGroupEntries, Face, TextureAspect, ShaderDefVal, ColorTargetState, ColorWrites, TextureSampleType,
+                BufferBindingType, BufferSize, CachedRenderPipelineId, ColorTargetState,
+                ColorWrites, Extent3d, Face, LoadOp, Operations, PipelineCache, PrimitiveTopology,
+                RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
+                Shader, ShaderDefVal, ShaderSize, ShaderStages, ShaderType,
+                SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
+                StorageTextureAccess, Texture, TextureAspect, TextureDescriptor, TextureDimension,
+                TextureFormat, TextureSampleType, TextureUsages, TextureView,
+                TextureViewDescriptor, TextureViewDimension, UniformBuffer,
             },
             renderer::{RenderContext, RenderDevice, RenderQueue},
             texture::{FallbackImage, Image},
             view::{
-                ExtractedView, InheritedVisibility, Msaa, NoFrustumCulling, ViewTarget,
-                ViewVisibility, Visibility, VisibleEntities, ViewDepthTexture,
+                ExtractedView, InheritedVisibility, Msaa, NoFrustumCulling, ViewDepthTexture,
+                ViewTarget, ViewVisibility, Visibility, VisibleEntities,
             },
-            Extract, ExtractSchedule, Render, RenderApp, RenderSet, batching::{batch_and_prepare_render_phase, GetBatchData, write_batched_instance_buffer}, color::Color,
+            Extract, ExtractSchedule, Render, RenderApp, RenderSet,
         },
         transform::components::{GlobalTransform, Transform},
         utils::{nonmax::NonMaxU32, FloatOrd, HashSet},
@@ -271,24 +281,22 @@ mod render {
             let transient_world_texture_view =
                 transient_world_texture.create_view(&TextureViewDescriptor::default());
 
-            let depth_prepass_texture = render_device.create_texture(
-                &TextureDescriptor {
-                    label: Some("depth prepass texture"),
-                    size: Extent3d {
-                        width: 640,
-                        height: 360,
-                        // width: 853,
-                        // height: 480,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: TextureDimension::D2,
-                    format: TextureFormat::R32Float,
-                    usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
-                    view_formats: &[],
-                }
-            );
+            let depth_prepass_texture = render_device.create_texture(&TextureDescriptor {
+                label: Some("depth prepass texture"),
+                size: Extent3d {
+                    width: 640,
+                    height: 360,
+                    // width: 853,
+                    // height: 480,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::R32Float,
+                usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
             let depth_prepass_texture_view =
                 depth_prepass_texture.create_view(&TextureViewDescriptor {
                     // aspect: TextureAspect::StencilOnly,
@@ -420,24 +428,22 @@ mod render {
                 ..Default::default()
             };
 
-            let depth_prepass_depth_stencil = render_device.create_texture(
-                &TextureDescriptor {
-                    label: Some("depth prepass depth stencil"),
-                    size: Extent3d {
-                        width: 640,
-                        height: 360,
-                        // width: 853,
-                        // height: 480,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: TextureDimension::D2,
-                    format: TextureFormat::Depth32Float,
-                    usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
+            let depth_prepass_depth_stencil = render_device.create_texture(&TextureDescriptor {
+                label: Some("depth prepass depth stencil"),
+                size: Extent3d {
+                    width: 640,
+                    height: 360,
+                    // width: 853,
+                    // height: 480,
+                    depth_or_array_layers: 1,
                 },
-            );
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Depth32Float,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
             let depth_prepass_depth_stencil_view =
                 depth_prepass_depth_stencil.create_view(&TextureViewDescriptor {
                     // label: Some("depth prepass depth stencil view"),
@@ -543,7 +549,8 @@ mod render {
                         (
                             batch_and_prepare_render_phase::<ChunkRenderPhaseItem, MeshPipeline>,
                             batch_and_prepare_render_phase::<ChunkDepthPhaseItem, MeshPipeline>,
-                        ).in_set(RenderSet::PrepareResources),
+                        )
+                            .in_set(RenderSet::PrepareResources),
                     ),
                 );
         }
@@ -590,7 +597,9 @@ mod render {
             &self,
             graph: &mut RenderGraphContext,
             render_context: &mut RenderContext,
-            (depth_phase, render_phase, target, bevy_depth_view, cam3d, cam): QueryItem<Self::ViewQuery>,
+            (depth_phase, render_phase, target, bevy_depth_view, cam3d, cam): QueryItem<
+                Self::ViewQuery,
+            >,
             world: &bevy::prelude::World,
         ) -> Result<(), NodeRunError> {
             if render_phase.items.is_empty() {
@@ -1225,7 +1234,8 @@ mod render {
             desc.layout.insert(3, self.world_bind_group_layout.clone());
             let frag = desc.fragment.as_mut().unwrap();
             frag.shader = self.chunk_fragment_shader.clone();
-            frag.shader_defs.push(ShaderDefVal::Bool("CHUNK_DEPTH_PREPASS".into(), true));
+            frag.shader_defs
+                .push(ShaderDefVal::Bool("CHUNK_DEPTH_PREPASS".into(), true));
             frag.targets[0] = Some(ColorTargetState {
                 format: TextureFormat::R32Float,
                 blend: None,
