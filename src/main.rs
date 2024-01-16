@@ -498,6 +498,41 @@ mod render {
     struct WorldDataUniforms {
         player_pos: Vec3,
         screen_resolution: UVec2,
+        fov: f32,
+        // v is voxel size
+        // v / root2 cuz atleast 1 ray in a 2x2 ray gird must hit voxel
+        // alpha is angle between 2 adjacent rays
+        // v / root2 = t tan(alpha)
+        //
+        // theta is fov
+        // d is distance of screen from camera
+        // tan(theta/2) = 1/(2 * d)
+        //
+        // w is screen width in pixels
+        // tan(alpha) = (1/w) * 1/d
+        //
+        // t = v * w * cot(theta/2) / (2 root2)
+        unit_t_max: f32,
+        depth_prepass_scale_factor: u32,
+    }
+    impl WorldDataUniforms {
+        fn new(
+            player_pos: Vec3,
+            resolution: UVec2,
+            fov: f32,
+            depth_prepass_scale_factor: u32,
+        ) -> Self {
+            let theta = fov as f64;
+            let t =
+                (resolution.x as f64 / depth_prepass_scale_factor as f64) * (1.0 / (theta / 2.0).tan()) * (1.0 / (2.0 * 2.0f64.sqrt()));
+            Self {
+                player_pos,
+                screen_resolution: resolution,
+                fov,
+                unit_t_max: t as f32,
+                depth_prepass_scale_factor,
+            }
+        }
     }
 
     // refer the source code of MaterialPlugin<M>
@@ -786,20 +821,24 @@ mod render {
 
     fn extract_world_data(
         mut commands: Commands,
-        player: Extract<Query<&GlobalTransform, With<PlayerEntity>>>,
+        player: Extract<Query<(&GlobalTransform, &Projection), With<PlayerEntity>>>,
         windows: Extract<Query<&Window>>,
     ) {
         let Ok(window) = windows.get_single() else {
             return;
         };
-        let player = player.single();
+        let (player, Projection::Perspective(projection)) = player.single() else {
+            panic!("player should have perspective projection. not orthographic.")
+        };
         let width = window.resolution.physical_width() as _;
         let height = window.resolution.physical_height() as _;
 
-        commands.insert_resource(WorldDataUniforms {
-            player_pos: player.translation(),
-            screen_resolution: UVec2::new(width, height),
-        });
+        commands.insert_resource(WorldDataUniforms::new(
+            player.translation(),
+            UVec2::new(width, height),
+            projection.fov,
+            8,
+        ));
     }
 
     fn update_world_data(

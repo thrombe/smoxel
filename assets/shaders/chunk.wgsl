@@ -12,6 +12,9 @@
 struct WorldDataUniforms {
     player_pos: vec3<f32>,
     screen_resolution: vec2<u32>,
+    fov: f32,
+    unit_t_max: f32,
+    depth_prepass_scale_factor: u32,
 }
 
 @group(3) @binding(0) var<uniform> world_data: WorldDataUniforms;
@@ -52,11 +55,6 @@ fn get_mip2(pos: vec3<f32>) -> vec2<u32> {
 
 fn unpackBytes(t: u32) -> vec4<u32> {
     return (t >> vec4<u32>(0u, 8u, 16u, 24u)) & 15u;
-}
-
-struct Mip {
-    z0: vec4<u32>,
-    z1: vec4<u32>,
 }
 
 fn getMipByte(mip: vec2<u32>, index: u32) -> u32 {
@@ -190,7 +188,10 @@ fn get_prepass_depth(uv: vec2<f32>) -> f32 {
     return t;
 }
 
-// fn resolution_is_enouugh(t: f32) -> bool
+// assuming voxel size is 1 unit
+fn is_resolution_enough(t: f32) -> bool {
+    return world_data.unit_t_max > t;
+}
 
 struct Output {
     @location(0) color: vec4<f32>,
@@ -253,13 +254,13 @@ fn fragment(
     let tmin = min(t1, t2);
 
     // if t is -ve, we want to march from the ray_origin instead. so clip it at 0.0
-    let t = max(0.0, max(tmin.x, max(tmin.y, tmin.z)));
+    var t = max(0.0, max(tmin.x, max(tmin.y, tmin.z)));
 
     #ifdef CHUNK_DEPTH_PREPASS
-        o = ray_origin + ray_dir * t;
     #else
     if enable_depth_prepass {
-        o = ray_origin + ray_dir * (max(depth_t - 0.000, t));
+        t = max(t, depth_t);
+
         // o = ray_origin + ray_dir * (depth_t + 0.000);
 
         // out.color = vec4(vec3(depth_t/10.0), 1.0);
@@ -271,6 +272,7 @@ fn fragment(
         // return out;
     }
     #endif
+    o = ray_origin + ray_dir * t;
 
     // cache the hit position
     let ray_pos = o;
@@ -288,7 +290,7 @@ fn fragment(
     var stepi = vec3<i32>(ray_dir >= 0.0) - vec3<i32>(ray_dir < 0.0);
     var step = vec3<f32>(stepi);
     #ifdef CHUNK_DEPTH_PREPASS
-        var res = mip5_loop_final(o, ray_dir, step, stepi, dt);
+        var res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
     #else
         var res = mip2_loop_final(o, ray_dir, step, stepi, dt);
     #endif
@@ -437,7 +439,7 @@ fn inline_mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: v
     return res;
 }
 
-fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
+fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
@@ -460,7 +462,7 @@ fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: v
         }
         var mip = get_mip2_unckecked(marchi);
         if any(mip > 0u) {
-            let res = mip4_loop(_o, ray_dir, step, _stepi, dt, last_t * 32.0 + nudge_t, mip);
+            let res = mip4_loop(_o, ray_dir, step, _stepi, dt, last_t * 32.0 + nudge_t, mip, ray_t);
             if res.hit {
                 return res;
             }
@@ -474,7 +476,7 @@ fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: v
     return res;
 }
 
-fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>) -> MipResult {
+fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
@@ -495,7 +497,7 @@ fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
         let index = m.x | m.y | m.z;
         let comp = getMipByte(mip, index);
         if (comp > 0u) {
-            res = mip3_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 16.0 + nudge_t, comp);
+            res = mip3_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 16.0 + nudge_t, comp, ray_t);
             if res.hit {
                 return res;
             }
@@ -509,7 +511,7 @@ fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     return res;
 }
 
-fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, comp: u32) -> MipResult {
+fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, comp: u32, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
@@ -530,7 +532,7 @@ fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
         let index = m.x | m.y | m.z;
         let voxel = getMipBit(comp, index);
         if voxel > 0u {
-            let res = mip2_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 8.0 + nudge_t);
+            let res = mip2_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 8.0 + nudge_t, ray_t);
             if res.hit {
                 return res;
             }
@@ -562,7 +564,7 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
         }
         var mip = get_mip1_unchecked(marchi);
         if any(mip > 0u) {
-            let res = mip1_loop(o, ray_dir, step, stepi, dt, last_t + nudge_t, mip);
+            let res = mip1_loop(o, ray_dir, step, stepi, dt, last_t + nudge_t, mip, 0.0);
             if res.hit {
                 return res;
             }
@@ -577,10 +579,18 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
     return res;
 }
 
-fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32) -> MipResult {
+fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
+
+    #ifdef CHUNK_DEPTH_PREPASS
+        if !is_resolution_enough(ray_t + _last_t) {
+            res.hit = true;
+            res.t = _last_t;
+            return res;
+        }
+    #endif
 
     var o = _o + ray_dir * (_last_t + nudge_t);
     var marchi = vec3<i32>(floor(o) + 0.5);
@@ -598,7 +608,7 @@ fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
         }
         var mip = get_mip1_unchecked(marchi + mod8);
         if any(mip > 0u) {
-            let res = mip1_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 4.0 + nudge_t, mip);
+            let res = mip1_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 4.0 + nudge_t, mip, ray_t);
             if res.hit {
                 return res;
             }
@@ -612,10 +622,18 @@ fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     return res;
 }
 
-fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>) -> MipResult {
+fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
+
+    #ifdef CHUNK_DEPTH_PREPASS
+        if !is_resolution_enough(ray_t + _last_t) {
+            res.hit = true;
+            res.t = _last_t;
+            return res;
+        }
+    #endif
 
     var o = _o + ray_dir * (_last_t + nudge_t);
 
@@ -633,7 +651,7 @@ fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
         let index = m.x | m.y | m.z;
         let comp = getMipByte(mip, index);
         if (comp > 0u) {
-            res = mip0_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 2.0 + nudge_t, comp);
+            res = mip0_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 2.0 + nudge_t, comp, ray_t);
             if res.hit {
                 return res;
             }
@@ -647,10 +665,18 @@ fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     return res;
 }
 
-fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, comp: u32) -> MipResult {
+fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, comp: u32, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
+
+    #ifdef CHUNK_DEPTH_PREPASS
+        if !is_resolution_enough(ray_t + _last_t) {
+            res.hit = true;
+            res.t = _last_t;
+            return res;
+        }
+    #endif
 
     var o = _o + ray_dir * (_last_t + nudge_t);
     var marchi = vec3<i32>(floor(o) + 0.5);
