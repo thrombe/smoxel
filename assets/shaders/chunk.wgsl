@@ -188,9 +188,8 @@ fn get_prepass_depth(uv: vec2<f32>) -> f32 {
     return t;
 }
 
-// assuming voxel size is 1 unit
-fn is_resolution_enough(t: f32) -> bool {
-    return world_data.unit_t_max > t;
+fn is_resolution_enough(t: f32, voxel_size: f32) -> bool {
+    return world_data.unit_t_max * voxel_size > t;
 }
 
 struct Output {
@@ -585,7 +584,7 @@ fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     res.color = vec4(0.0);
 
     #ifdef CHUNK_DEPTH_PREPASS
-        if !is_resolution_enough(ray_t + _last_t) {
+        if !is_resolution_enough(ray_t + _last_t, 4.0) {
             res.hit = true;
             res.t = _last_t;
             return res;
@@ -628,7 +627,7 @@ fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     res.color = vec4(0.0);
 
     #ifdef CHUNK_DEPTH_PREPASS
-        if !is_resolution_enough(ray_t + _last_t) {
+        if !is_resolution_enough(ray_t + _last_t, 2.0) {
             res.hit = true;
             res.t = _last_t;
             return res;
@@ -671,7 +670,7 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     res.color = vec4(0.0);
 
     #ifdef CHUNK_DEPTH_PREPASS
-        if !is_resolution_enough(ray_t + _last_t) {
+        if !is_resolution_enough(ray_t + _last_t, 1.0) {
             res.hit = true;
             res.t = _last_t;
             return res;
