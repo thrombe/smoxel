@@ -37,18 +37,6 @@ fn get_color(index: u32) -> vec4<f32> {
 }
 
 
-fn get_mip1(pos: vec3<f32>) -> vec2<u32> {
-    var coords = vec3<u32>(pos);
-    var voxel = textureLoad(voxels_mip1, coords/4u, 0);
-    // return vec4<u32>(voxel.x & 31u, voxel.x >> 16u, voxel.y & 31u, voxel.y >> 16u);
-    return voxel.xy;
-}
-fn get_mip2(pos: vec3<f32>) -> vec2<u32> {
-    var coords = vec3<u32>(pos);
-    var voxel = textureLoad(voxels_mip2, coords/(4u * 8u), 0);
-    return voxel.xy;
-}
-
 fn unpackBytes(t: u32) -> vec4<u32> {
     return (t >> vec4<u32>(0u, 8u, 16u, 24u)) & 15u;
 }
@@ -92,73 +80,7 @@ fn getMipBit(mip: u32, index: u32) -> u32 {
     return mip & mask;
 }
 
-
-fn get_mip1_unchecked(pos: vec3<i32>) -> vec2<u32> {
-    var voxel = textureLoad(voxels_mip1, pos/4, 0);
-    return voxel.xy;
-}
-
-fn get_mip2_unckecked(pos: vec3<i32>) -> vec2<u32> {
-    var voxel = textureLoad(voxels_mip2, pos/(4 * 8), 0);
-    return voxel.xy;
-}
-
-fn mip0(march: vec3<f32>) -> bool {
-    var mip = get_mip1(march);
-    var marchu = vec3<i32>(march);
-    var mod4 = marchu % 4;
-    var m = vec3<u32>(mod4 > 1) << vec3(0u, 1u, 2u);
-    var index = m.x | m.y | m.z;
-    let comp = getMipByte(mip, index);
-    var mod2 = marchu % 2;
-    m = vec3<u32>(mod2 > 0) << vec3(0u, 1u, 2u);
-    index = m.x | m.y | m.z;
-    let voxel = getMipBit(comp, index);
-    return voxel != 0u;
-}
-fn mip1(march: vec3<f32>) -> bool {
-    var mip = get_mip1(march);
-    var marchu = vec3<i32>(march);
-    var mod4 = marchu % 4;
-    var m = vec3<u32>(mod4 > 1) << vec3(0u, 1u, 2u);
-    var index = m.x | m.y | m.z;
-    let comp = getMipByte(mip, index);
-    return comp != 0u;
-}
-fn mip2(march: vec3<f32>) -> bool {
-    var mip = get_mip1(march);
-    return any(mip > 0u);
-}
-fn mip3(march: vec3<f32>) -> bool {
-    var mip = get_mip2(march);
-    var marchu = vec3<i32>(march);
-    var mod4 = marchu % 32;
-    var m = vec3<u32>(mod4 > 15) << vec3(0u, 1u, 2u);
-    var index = m.x | m.y | m.z;
-    let comp = getMipByte(mip, index);
-    var mod2 = marchu % 16;
-    m = vec3<u32>(mod2 > 7) << vec3(0u, 1u, 2u);
-    index = m.x | m.y | m.z;
-    let voxel = getMipBit(comp, index);
-    return voxel != 0u;
-}
-fn mip4(march: vec3<f32>) -> bool {
-    var mip = get_mip2(march);
-    var marchu = vec3<i32>(march);
-    var mod4 = marchu % 32;
-    var m = vec3<u32>(mod4 > 15) << vec3(0u, 1u, 2u);
-    var index = m.x | m.y | m.z;
-    let comp = getMipByte(mip, index);
-    return comp != 0u;
-}
-fn mip5(march: vec3<f32>) -> bool {
-    var mip = get_mip2(march);
-    return any(mip > 0u);
-}
-
 fn get_prepass_depth(uv: vec2<f32>) -> f32 {
-    // let index = vec2<i32>(uv * vec2(853.0, 480.0));
-    // let index = vec2<i32>(uv * vec2(640.0, 360.0));
     let index = vec2<i32>(
         uv *
         (vec2<f32>(world_data.screen_resolution / world_data.depth_prepass_scale_factor) +
@@ -254,9 +176,6 @@ fn fragment(
     if enable_depth_prepass {
         t = max(t, depth_t);
 
-        // o = ray_origin + ray_dir * (depth_t + 0.000);
-
-        // out.color = vec4(vec3(depth_t/10.0), 1.0);
         // out.color = vec4(vec3(50.0/t), 1.0);
         // out.color = vec4(vec3(depth_t - t)/100.0, 1.0);
         // out.color = vec4(vec3(max(depth_t, t))/1000.0, 1.0);
@@ -303,11 +222,11 @@ fn fragment(
         if enable_depth_prepass {
             res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
         } else {
+            // res = inline_no_mip_loop(o, ray_dir, step, dt);
             // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
         }
     #endif
-    // var res = inline_no_mip_loop(o, ray_dir, step, dt);
     res.t *= voxel_size;
     res.t += t;
 
