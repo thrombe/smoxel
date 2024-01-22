@@ -1898,16 +1898,15 @@ mod chunk {
         }
 
         pub fn to_image(self) -> Image {
-            assert_eq!(self.side % 4, 0, "side should be a multiple of 4");
             Image::new(
                 Extent3d {
-                    width: self.side as u32 / 4,
+                    width: self.side as _,
                     height: self.side as _,
                     depth_or_array_layers: self.side as _,
                 },
                 TextureDimension::D3,
                 self.voxels,
-                TextureFormat::Rgba8Uint,
+                TextureFormat::R8Uint,
             )
         }
     }

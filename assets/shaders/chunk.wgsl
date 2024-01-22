@@ -26,14 +26,10 @@ fn get_voxel(pos: vec3<f32>) -> u32 {
         return 0u;
     }
     
-    var coords = vec3<u32>(pos);
-    let xyzw = coords.x % 4u;
-    coords.x /= 4u;
-
     // loading textures automatically break the u32 into a vec4<u32> 1 byte each channel (~~ vec4<u8>)
-    var voxel = textureLoad(voxels, coords, 0);
+    var voxel = textureLoad(voxels, vec3<i32>(pos), 0).x;
 
-    return voxel[xyzw];
+    return voxel;
 }
 
 fn get_color(index: u32) -> vec4<f32> {
@@ -96,16 +92,6 @@ fn getMipBit(mip: u32, index: u32) -> u32 {
     return mip & mask;
 }
 
-fn get_voxel_unchecked(pos: vec3<i32>) -> u32 {
-    var coords = pos;
-    let xyzw = coords.x % 4;
-    coords.x /= 4;
-
-    // loading textures automatically break the u32 into a vec4<u32> 1 byte each channel (~~ vec4<u8>)
-    var voxel = textureLoad(voxels, coords, 0);
-
-    return voxel[xyzw];
-}
 
 fn get_mip1_unchecked(pos: vec3<i32>) -> vec2<u32> {
     var voxel = textureLoad(voxels_mip1, pos/4, 0);
@@ -674,7 +660,7 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
                 res.t = _last_t + last_t;
                 return res;
             #else
-                let voxel = get_voxel_unchecked(marchi + mod2);
+                let voxel = textureLoad(voxels, marchi + mod2, 0).x;
                 // YAY: fixed :}
                 // check again cux of precision issues ig :/
                 // if voxel > 0u {
