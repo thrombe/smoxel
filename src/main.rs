@@ -1411,11 +1411,12 @@ mod chunk {
         mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
         mut meshes: ResMut<Assets<Mesh>>,
     ) {
+        let scene_pos = Vec3::new(0.0, -500.0, 0.0);
         let scene_entity = commands
             .spawn((
                 Name::new("test voxels"),
                 GlobalTransform::default(),
-                Transform::from_translation(Vec3::new(0.0, -500.0, 0.0)),
+                Transform::from_translation(scene_pos),
                 VisibilityBundle::default(),
             ))
             .id();
@@ -1457,7 +1458,8 @@ mod chunk {
         for (chunk_index, chunk) in tc.chunks.into_iter() {
             let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
             let chunk_pos = chunk_pos * size * 2.0;
-            // + tc.chunk_side as f32 / 2.0;
+
+            let side = chunk.side;
 
             let mip1 = chunk.mip();
             let mip2 = mip1.mip();
@@ -1474,7 +1476,7 @@ mod chunk {
                 side: side as _,
                 voxels: voxels_handle.clone(),
                 materials: material_handle.clone(),
-                chunk_position: chunk_pos,
+                chunk_position: chunk_pos + scene_pos,
                 chunk_size: size,
                 voxels_mip1: mip1_handle,
                 voxels_mip2: mip2_handle,
@@ -2611,11 +2613,7 @@ mod vox {
         for (chunk_index, chunk) in tc.chunks.into_iter() {
             let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
             let chunk_pos = chunk_pos * size * 2.0;
-            // + tc.chunk_side as f32 / 2.0;
 
-            // let chunk = chunk.mip1_bytechunk();
-            // let chunk = chunk.mip1_bytechunk();
-            // let chunk = chunk.mip1_bytechunk();
             let side = chunk.side;
 
             let mip1 = chunk.mip();

@@ -125,14 +125,13 @@ const enable_depth_prepass: bool = true;
 // - [Raymarching Voxel](https://medium.com/@calebleak/raymarching-voxel-rendering-58018201d9d6)
 // - [VertexOutput](https://github.com/bevyengine/bevy/blob/71adb77a2ea97027ae54dea5552ba9fdbfb707fd/crates/bevy_pbr/src/render/forward_io.wgsl#L30)
 @fragment
-fn fragment(
-    mesh: VertexOutput,
-) -> Output {
+fn fragment(mesh: VertexOutput) -> Output {
     var out: Output;
 
-    if (true) {
-        // return vec4<f32>((mesh.world_position.xyz - chunk_pos)/1000.0, 1.0);
-        // return vec4<f32>(mesh.uv, 0.0, 1.0);
+    if true {
+        // out.color =  vec4<f32>((mesh.world_position.xyz - chunk_pos)/1000.0, 1.0);
+        // out.color = vec4<f32>(mesh.uv, 0.0, 1.0);
+        // return out;
     }
     let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
     let ray_origin = world_data.player_pos.xyz;
