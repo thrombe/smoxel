@@ -320,7 +320,6 @@ fn fragment(
             res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
         }
     #endif
-    // var res = inline_mip2_loop(o, ray_dir, step, stepi, dt);
     // var res = inline_no_mip_loop(o, ray_dir, step, dt);
     res.t *= voxel_size;
     res.t += t;
@@ -376,90 +375,6 @@ fn inline_no_mip_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, dt: ve
         mask = vec3<f32>(t.xyz <= min(t.yzx, t.zxy));
         t += mask * dt;
         march += mask * step;
-    }
-
-    return res;
-}
-
-fn inline_mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>) -> MipResult {
-    var res: MipResult;
-    res.hit = false;
-    res.color = vec4(0.0);
-
-    var o = _o + ray_dir * 0.001;
-    // current voxel position (offset to center of the voxel)
-    var march = floor(o) + 0.5;
-    var marchi = vec3<i32>(march);
-
-    // how much t untill we hit a plane along this axis
-    var t = (step * (0.5 - fract(o/4.0)) + 0.5) * dt * 4.0;
-    var voxel: u32;
-    var mask: vec3<f32>;
-    var last_t = 0.0;
-    for (var i = 0u; i < (side / 4u) * 3u - 2u; i += 1u) {
-        if any(marchi >= i32(side) || marchi < 0) {
-            break;
-        }
-        var mip = get_mip1(march);
-        if any(mip > 0u) {
-            var o = o + ray_dir * (last_t + 0.001);
-            var march = floor(o) + 0.5;
-            var marchi = vec3<i32>(march);
-            var t = (step * (0.5 - fract(o/2.0)) + 0.5) * dt * 2.0;
-            var mod4 = marchi % 4;
-            var last_t = 0.0;
-            for (var i2 = 0u; i2 < 4u; i2 += 1u) {
-                if (any(mod4 >= 4 || mod4 < 0)) {
-                    break;
-                }
-                let m = vec3<u32>(mod4 > 1) << vec3(0u, 1u, 2u);
-                let index = m.x | m.y | m.z;
-                let comp = getMipByte(mip, index);
-                if (comp > 0u) {
-                    var o = o + ray_dir * (last_t + 0.001);
-                    var march = floor(o) + 0.5;
-                    var marchi = vec3<i32>(march);
-                    var t = (step * (0.5 - fract(o)) + 0.5) * dt;
-                    var mod2 = marchi % 2;
-                    var last_t = 0.0;
-                    for (var i3 = 0u; i3 < 4u; i3 += 1u) {
-                        if any(mod2 >= 2 || mod2 < 0) {
-                            break;
-                        }
-                        let m = vec3<u32>(mod2 > 0) << vec3(0u, 1u, 2u);
-                        let index = m.x | m.y | m.z;
-                        let voxel = getMipBit(comp, index);
-                        if voxel > 0u {
-                            let voxel = get_voxel(march);
-                            // check again cux of precision issues ig :/
-                            if voxel > 0u {
-                                res.color = get_color(voxel);
-                                res.hit = true;
-                                return res;
-                            }
-                        }
-                        let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
-                        let mask = vec3<f32>(maski);
-                        last_t = min(t.x, min(t.y, t.z));
-                        t += mask * dt;
-                        march += mask * step;
-                        mod2 += maski * stepi;
-                    }
-                }
-                let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
-                let mask = vec3<f32>(maski);
-                last_t = min(t.x, min(t.y, t.z));
-                t += mask * dt * 2.0;
-                march += mask * step * 2.0;
-                mod4 += maski * stepi * 2;
-            }
-        }
-        let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
-        let mask = vec3<f32>(maski);
-        last_t = min(t.x, min(t.y, t.z));
-        t += mask * dt * 4.0;
-        march += mask * step * 4.0;
-        marchi += maski * stepi * 4;
     }
 
     return res;
