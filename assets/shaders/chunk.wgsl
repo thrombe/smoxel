@@ -317,6 +317,7 @@ fn fragment(
         if enable_depth_prepass {
             res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
         } else {
+            // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
         }
     #endif
@@ -380,34 +381,32 @@ fn inline_no_mip_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, dt: ve
     return res;
 }
 
-fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
+fn mip5_loop_final(_oo: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
 
+    var _o = _oo / 32.0;
     var o = _o;
     // current voxel position (offset to center of the voxel)
     var marchi = vec3<i32>(o);
     marchi = max(vec3(0), marchi);
-    marchi = min(vec3(i32(side) - 1), marchi);
+    marchi = min(vec3(i32(side - 1u)/32), marchi);
 
-    let stepi = _stepi * 32;
-    o = o / 32.0;
     o = max(vec3<f32>(0.0), o);
-    o = min(vec3<f32>(f32((side) / 32u)), o);
-    let lim = i32(side / 32u);
+    o = min(vec3<f32>(f32(side / 32u)), o);
 
     // how much t untill we hit a plane along this axis
-    var t = (step * (0.5 - (o - vec3<f32>(marchi/32))) + 0.5) * dt;
+    var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var last_t = 0.0;
-    for (var i = 0; i < lim * 3 - 2; i += 1) {
+    for (var i = 0; i < i32(side)/32 * 3 - 2; i += 1) {
         // TODO: figure out why this should not be '>='
-        if any(marchi >= i32(side) || marchi < 0) {
+        if any(marchi >= i32(side)/32 || marchi < 0) {
             break;
         }
-        var mip = get_mip2_unckecked(marchi);
+        var mip = textureLoad(voxels_mip2, marchi, 0).xy;
         if any(mip > 0u) {
-            let res = mip4_loop(_o, ray_dir, step, _stepi, dt, last_t * 32.0, mip, ray_t, (marchi / 32) * 32);
+            let res = mip4_loop(_o * 2.0, ray_dir, step, stepi, dt, last_t * 2.0, mip, ray_t, marchi * 2);
             if res.hit {
                 return res;
             }
@@ -421,39 +420,34 @@ fn mip5_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: v
     return res;
 }
 
-fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
+fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
-    let max_bound = min_bound + 31;
 
     var o = _o + ray_dir * _last_t;
 
     var marchi = vec3<i32>(o);
-    marchi = min(max_bound, marchi);
+    marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
-    // o = max(vec3<f32>(min_bound) + 0.001, o);
-    // o = min(vec3<f32>(max_bound) - 0.001, o);
-    var mod32 = marchi % 32;
+    var mod32 = marchi % 2;
     marchi -= mod32;
     o -= vec3<f32>(min_bound);
-    o = o / 16.0;
     o = min(vec3(2.0) - 0.00001, o);
     o = max(vec3(0.0) + 0.00001, o);
-    o += vec3<f32>(min_bound);
-    let stepi = _stepi * 16;
+
 
     var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
-        if (any(mod32 >= 32 || mod32 < 0)) {
+        if (any(mod32 >= 2 || mod32 < 0)) {
             break;
         }
-        let m = vec3<u32>(mod32 > 15) << vec3(0u, 1u, 2u);
+        let m = vec3<u32>(mod32 > 0) << vec3(0u, 1u, 2u);
         let index = m.x | m.y | m.z;
         let comp = getMipByte(mip, index);
         if (comp > 0u) {
-            res = mip3_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 16.0, comp, ray_t, marchi + (mod32 / 16) * 16);
+            res = mip3_loop(_o * 2.0, ray_dir, step, stepi, dt, (_last_t + last_t) * 2.0, comp, ray_t, (marchi + mod32) * 2);
             if res.hit {
                 return res;
             }
@@ -467,37 +461,33 @@ fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     return res;
 }
 
-fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, comp: u32, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
+fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, comp: u32, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
-    let max_bound = min_bound + 15;
 
     var o = _o + ray_dir * _last_t;
 
     var marchi = vec3<i32>(floor(o) + 0.5);
-    marchi = min(max_bound, marchi);
+    marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
-    var mod16 = marchi % 16;
+    var mod16 = marchi % 2;
     marchi -= mod16;
     o -= vec3<f32>(min_bound);
-    o = o / 8.0;
     o = min(vec3(2.0) - 0.00001, o);
     o = max(vec3(0.0) + 0.00001, o);
-    o += vec3<f32>(min_bound);
-    let stepi = _stepi * 8;
 
     var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
-        if any(mod16 >= 16 || mod16 < 0) {
+        if any(mod16 >= 2 || mod16 < 0) {
             break;
         }
-        let m = vec3<u32>(mod16 > 7) << vec3(0u, 1u, 2u);
+        let m = vec3<u32>(mod16 > 0) << vec3(0u, 1u, 2u);
         let index = m.x | m.y | m.z;
         let voxel = getMipBit(comp, index);
         if voxel > 0u {
-            let res = mip2_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 8.0, ray_t, marchi + (mod16 / 8) * 8);
+            let res = mip2_loop(_o * 2.0, ray_dir, step, stepi, dt, (_last_t + last_t) * 2.0, ray_t, (marchi + mod16) * 2);
             if res.hit {
                 return res;
             }
@@ -511,30 +501,30 @@ fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     return res;
 }
 
-fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
+fn mip2_loop_final(_oo: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
 
+    let _o = _oo / 4.0;
     var o = _o;
     // current voxel position (offset to center of the voxel)
     var marchi = vec3<i32>(o);
-    marchi = min(vec3(i32(side) - 1), marchi);
+    marchi = min(vec3(i32(side - 1u)/4), marchi);
     marchi = max(vec3(0), marchi);
-    o /= 4.0;
     o = max(vec3<f32>(0.0), o);
-    o = min(vec3<f32>(f32((side) / 4u)), o);
+    o = min(vec3<f32>(f32(side / 4u)), o);
 
     // how much t untill we hit a plane along this axis
-    var t = (step * (0.5 - (o - vec3<f32>(marchi/4))) + 0.5) * dt * 4.0;
+    var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0u; i < (side / 4u) * 3u - 2u; i += 1u) {
-        if any(marchi >= i32(side) || marchi < 0) {
+        if any(marchi >= i32(side)/4 || marchi < 0) {
             break;
         }
-        var mip = get_mip1_unchecked(marchi);
+        var mip = textureLoad(voxels_mip1, marchi, 0).xy;
         if any(mip > 0u) {
-            let res = mip1_loop(_o, ray_dir, step, stepi, dt, last_t, mip, ray_t, (marchi / 4) * 4);
+            let res = mip1_loop(_o * 2.0, ray_dir, step, stepi, dt, last_t * 2.0, mip, ray_t, marchi * 2);
             if res.hit {
                 return res;
             }
@@ -542,50 +532,46 @@ fn mip2_loop_final(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: ve
         let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
         let mask = vec3<f32>(maski);
         last_t = min(t.x, min(t.y, t.z));
-        t += mask * dt * 4.0;
-        marchi += maski * stepi * 4;
+        t += mask * dt;
+        marchi += maski * stepi;
     }
     
     return res;
 }
 
-fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
+fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
-    let max_bound = min_bound + 7;
 
     #ifdef CHUNK_DEPTH_PREPASS
-        if !is_resolution_enough(ray_t + _last_t, 4.0) {
+        if !is_resolution_enough(ray_t + _last_t * 4.0, 4.0) {
             res.hit = true;
-            res.t = _last_t;
+            res.t = _last_t * 4.0;
             return res;
         }
     #endif
 
     var o = _o + ray_dir * _last_t;
     var marchi = vec3<i32>(floor(o) + 0.5);
-    marchi = min(max_bound, marchi);
+    marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
 
-    var mod8 = marchi % 8;
+    var mod8 = marchi % 2;
     marchi -= mod8;
     o -= vec3<f32>(min_bound);
-    o /= 4.0;
     o = min(vec3(2.0) - 0.00001, o);
     o = max(vec3(0.0) + 0.00001, o);
-    o += vec3<f32>(min_bound);
-    let stepi = _stepi * 4;
 
     var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
-        if (any(mod8 >= 8 || mod8 < 0)) {
+        if (any(mod8 >= 2 || mod8 < 0)) {
             break;
         }
-        var mip = get_mip1_unchecked(marchi + mod8);
+        var mip = textureLoad(voxels_mip1, marchi + mod8, 0).xy;
         if any(mip > 0u) {
-            let res = mip1_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 4.0, mip, ray_t, marchi + (mod8 / 4) * 4);
+            let res = mip1_loop(_o * 2.0, ray_dir, step, stepi, dt, (_last_t + last_t) * 2.0, mip, ray_t, (marchi + mod8) * 2);
             if res.hit {
                 return res;
             }
@@ -599,45 +585,41 @@ fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i3
     return res;
 }
 
-fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, _stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
+fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32>, dt: vec3<f32>, _last_t: f32, mip: vec2<u32>, ray_t: f32, min_bound: vec3<i32>) -> MipResult {
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
-    let max_bound = min_bound + 3;
 
     #ifdef CHUNK_DEPTH_PREPASS
-        if !is_resolution_enough(ray_t + _last_t, 2.0) {
+        if !is_resolution_enough(ray_t + _last_t * 2.0, 2.0) {
             res.hit = true;
-            res.t = _last_t;
+            res.t = _last_t * 2.0;
             return res;
         }
     #endif
 
     var o = _o + ray_dir * _last_t;
     var marchi = vec3<i32>(floor(o) + 0.5);
-    marchi = min(max_bound, marchi);
+    marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
 
-    var mod4 = marchi % 4;
+    var mod4 = marchi % 2;
     marchi -= mod4;
     o -= vec3<f32>(min_bound);
-    o /= 2.0;
     o = min(vec3(2.0) - 0.00001, o);
     o = max(vec3(0.0) + 0.00001, o);
-    o += vec3<f32>(min_bound);
-    let stepi = _stepi * 2;
 
     var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
-        if (any(mod4 >= 4 || mod4 < 0)) {
+        if (any(mod4 >= 2 || mod4 < 0)) {
             break;
         }
-        let m = vec3<u32>(mod4 > 1) << vec3(0u, 1u, 2u);
+        let m = vec3<u32>(mod4 > 0) << vec3(0u, 1u, 2u);
         let index = m.x | m.y | m.z;
         let comp = getMipByte(mip, index);
         if (comp > 0u) {
-            res = mip0_loop(_o, ray_dir, step, _stepi, dt, _last_t + last_t * 2.0, comp, ray_t, marchi + (mod4 / 2) * 2);
+            res = mip0_loop(_o * 2.0, ray_dir, step, stepi, dt, (_last_t + last_t) * 2.0, comp, ray_t, (marchi + mod4) * 2);
             if res.hit {
                 return res;
             }
@@ -655,7 +637,6 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     var res: MipResult;
     res.hit = false;
     res.color = vec4(0.0);
-    let max_bound = min_bound + 1;
 
     #ifdef CHUNK_DEPTH_PREPASS
         if !is_resolution_enough(ray_t + _last_t, 1.0) {
@@ -667,7 +648,7 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
 
     var o = _o + ray_dir * _last_t;
     var marchi = vec3<i32>(o);
-    marchi = min(max_bound, marchi);
+    marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
     o -= vec3<f32>(min_bound);
     o = min(vec3(2.0) - 0.00001, o);
