@@ -198,20 +198,12 @@ fn fragment(
     o -= (chunk_center - chunk_size);
     // make each voxel of size 1
     o /= voxel_size;
-    // TODO: currently, o can go from (0, 0, 0) to (side, side, side)
-    // maybe make it go from 0 to 1. it will increase the floating point accuracy.
-    // o /= f32(side);
-    // TODO: have 2 components of ray_pos. an integer component and a fractional component.
+
     // TODO: could try to rewrite this to make ray direction always be >= 0 in every direction
     // and store an (offset, sign) pair to calculate the voxel position
     // march * sign + offset
     // offset.x is 'side' and sign.x is -1 if ray goes towards -ve x for example.
     // after this, it becomes much easier to do the 2 component thing i think.
-    // DONE: (TODO: refactor + reduce unnecessary operations where possible) when intersecting ray with a voxel, we already know
-    // the bounds where the voxel could be
-    // as it should be within the octree node that is hit previously.
-    // so after intersection, we just do
-    // march = max(min(march, max_bound), min_bound)
 
     var stepi = vec3<i32>(ray_dir >= 0.0) - vec3<i32>(ray_dir < 0.0);
     var step = vec3<f32>(stepi);
@@ -293,11 +285,17 @@ fn mip5_loop_final(_oo: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: v
 
     var _o = _oo / 32.0;
     var o = _o;
-    // current voxel position (offset to center of the voxel)
+    // current voxel position
     var marchi = vec3<i32>(o);
+
+    // this is kinda like having 2 components of ray_pos. an integer component and a fractional component.
+    // when intersecting ray with a voxel, we already know
+    // the bounds where the voxel could be
+    // as it should be within the octree node that is hit previously.
+    // so after intersection, we just do
+    // march = max(min(march, max_bound), min_bound)
     marchi = max(vec3(0), marchi);
     marchi = min(vec3(i32(side - 1u)/32), marchi);
-
     o = max(vec3<f32>(0.0), o);
     o = min(vec3<f32>(f32(side / 32u)), o);
 
@@ -580,14 +578,10 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
                 return res;
             #else
                 let voxel = textureLoad(voxels, marchi + mod2, 0).x;
-                // YAY: fixed :}
-                // check again cux of precision issues ig :/
-                // if voxel > 0u {
-                    res.color = get_color(voxel);
-                    res.hit = true;
-                    res.t = _last_t + last_t;
-                    return res;
-                // }
+                res.color = get_color(voxel);
+                res.hit = true;
+                res.t = _last_t + last_t;
+                return res;
             #endif
         }
         let maski = vec3<i32>(t.xyz <= min(t.yzx, t.zxy));
