@@ -1533,7 +1533,7 @@ mod chunk {
     #[derive(Component, Clone, Debug)]
     pub struct ChunkOctree {
         root: ChunkOctreeNode,
-        height: u32,     // 2.pow(height) number of voxels on edges
+        height: u32,       // 2.pow(height) number of voxels on edges
         chunk_height: u32, // in log2 (-size, size)
 
         voxel_physical_size: f32,
@@ -1549,7 +1549,7 @@ mod chunk {
             materials: Handle<Image>,
             entity: Entity,
         ) -> Self {
-            let voxel_physical_size = 1.0/16.0;
+            let voxel_physical_size = 1.0 / 16.0;
             Self {
                 entity,
                 height,
@@ -1724,7 +1724,11 @@ mod chunk {
 
                             let pos = pos + offset;
 
-                            if (pos.as_vec3() * voxel_physical_size - player).length().abs() > despawn_radius {
+                            if (pos.as_vec3() * voxel_physical_size - player)
+                                .length()
+                                .abs()
+                                > despawn_radius
+                            {
                                 c.despawn(commands);
                                 if mip.entity.is_none() {
                                     mip.spawn(
@@ -1732,7 +1736,8 @@ mod chunk {
                                         commands,
                                         images,
                                         chunk_materials,
-                                        voxel_physical_size * 2i32.pow(height - chunk_height) as f32,
+                                        voxel_physical_size
+                                            * 2i32.pow(height - chunk_height) as f32,
                                         materials,
                                         cube_mesh,
                                         chunk_pos.as_vec3() * voxel_physical_size,
@@ -2191,8 +2196,9 @@ mod chunk {
                         MaterialMeshBundle {
                             mesh: cube_mesh.clone(),
                             material: chunk_material,
-                            transform: Transform::from_translation(chunk_pos)
-                                .with_scale(Vec3::NEG_ONE * voxel_physical_size * side as f32 / 2.0),
+                            transform: Transform::from_translation(chunk_pos).with_scale(
+                                Vec3::NEG_ONE * voxel_physical_size * side as f32 / 2.0,
+                            ),
                             ..Default::default()
                         },
                     ))
@@ -2714,8 +2720,8 @@ mod vox {
     use dot_vox::{DotVoxData, Model, SceneNode};
 
     use crate::chunk::{
-        ByteChunk, ChunkHandle, ChunkMaterial, ChunkTrait, L1ChunkOctree, L2ChunkOctree,
-        TiledChunker, ChunkOctree, DEFAULT_CHUNK_SIDE,
+        ByteChunk, ChunkHandle, ChunkMaterial, ChunkOctree, ChunkTrait, L1ChunkOctree,
+        L2ChunkOctree, TiledChunker, DEFAULT_CHUNK_SIDE,
     };
 
     #[derive(Component, Clone, Copy)]
