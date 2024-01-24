@@ -1400,6 +1400,7 @@ mod chunk {
                     || {},
                     // spawn_chunk_tasks,
                     // resolve_chunk_tasks,
+                    // test_dynamic_mip,
                 ),
             );
         }
@@ -1423,6 +1424,7 @@ mod chunk {
 
         let size = 16.0;
         let side = 128usize;
+        let voxel_size = size / side as f32;
         let lim = 512;
         let k = 0.09;
         let perlin = noise::Perlin::new(234342);
@@ -1453,7 +1455,7 @@ mod chunk {
             }))
             .collect();
 
-        let material_handle = images.add(Chunk::material_image(materials));
+        let material_handle = images.add(ChunkHandle::material_image(materials));
         let cube_handle = meshes.add(Mesh::from(shape::Cube { size: size * 2.0 }));
         for (chunk_index, chunk) in tc.chunks.into_iter() {
             let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
@@ -1466,7 +1468,7 @@ mod chunk {
             let voxels_handle = images.add(chunk.to_image());
             let mip1_handle = images.add(mip1.into_image());
             let mip2_handle = images.add(mip2.into_image());
-            let chunk = Chunk {
+            let chunk = ChunkHandle {
                 voxels: voxels_handle.clone(),
                 materials: material_handle.clone(),
                 side,
@@ -1477,7 +1479,7 @@ mod chunk {
                 voxels: voxels_handle.clone(),
                 materials: material_handle.clone(),
                 chunk_position: chunk_pos + scene_pos,
-                chunk_size: size,
+                voxel_size,
                 voxels_mip1: mip1_handle,
                 voxels_mip2: mip2_handle,
             });
@@ -1497,6 +1499,26 @@ mod chunk {
         }
     }
 
+    fn test_dynamic_mip(
+        mut commands: Commands,
+        mut svo: Query<(&mut ChunkOctree, &GlobalTransform)>,
+        mut player: Query<(&GlobalTransform, &PlayerEntity)>,
+        mut images: ResMut<Assets<Image>>,
+        mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
+    ) {
+        let (player, _) = player.single();
+        for (mut svo, pos) in svo.iter_mut() {
+            svo.update_chunks(
+                player.translation(),
+                500.0,
+                IVec3::ZERO,
+                &mut commands,
+                &mut images,
+                &mut chunk_materials,
+            );
+        }
+    }
+
     #[derive(Resource)]
     pub struct VoxelWorld {
         noise: noise::Perlin,
@@ -1509,73 +1531,390 @@ mod chunk {
     }
 
     #[derive(Component, Clone, Debug)]
-    pub enum SparseVoxelOctree {
-        Root {
-            position: Vec3,
-            size: f32, // from centre to each side
-            levels: usize,
-            voxels: [Option<Box<Self>>; 8],
-        },
-        Node {
-            voxels: [Option<Box<Self>>; 8],
-        },
-        Leaf {
-            // 1 chunk = (8*16)^3 minecraft blocks = 2M
-            // 1 minecraft block = (16 voxels)^3
-            // 1 block = 1m
-            // 1 chunk = 8m
+    pub struct ChunkOctree {
+        root: ChunkOctreeNode,
+        height: u32,     // 2.pow(height) number of voxels on edges
+        chunk_size: u32, // in log2 (-size, size)
+
+        voxel_physical_size: f32,
+        cube_handle: Handle<Mesh>,
+        materials: Handle<Image>,
+        entity: Entity,
+    }
+    impl ChunkOctree {
+        pub fn new(
+            height: u32,
+            chunk_size: u32,
+            cube_handle: Handle<Mesh>,
+            materials: Handle<Image>,
             entity: Entity,
-            // chunk: DefaultChunk,
+        ) -> Self {
+            let voxel_physical_size = 1.0/16.0;
+            // let voxel_physical_size = 1.0;
+            Self {
+                entity,
+                height,
+                chunk_size,
+                root: ChunkOctreeNode::new_node(chunk_size),
+                voxel_physical_size,
+                cube_handle,
+                materials,
+            }
+        }
+        pub fn set_voxel(&mut self, pos: IVec3, voxel: u8) -> Option<u8> {
+            if (IVec3::splat(2i32.pow(self.height - 1)) - pos.abs()).max_element() < 0 {
+                return None;
+            }
+            Some(
+                self.root
+                    .set_voxel(pos, voxel, self.height, self.chunk_size),
+            )
+        }
+
+        pub fn update_mip(&mut self) {
+            self.root.update_mip(self.chunk_size);
+        }
+        pub fn spawn_chunks(
+            &mut self,
+            commands: &mut Commands,
+            images: &mut Assets<Image>,
+            chunk_materials: &mut Assets<ChunkMaterial>,
+        ) {
+            self.root.spawn_chunks(
+                self.entity,
+                commands,
+                images,
+                chunk_materials,
+                self.voxel_physical_size,
+                &self.materials,
+                &self.cube_handle,
+                IVec3::ZERO,
+                self.height,
+            );
+        }
+        fn update_chunks(
+            &mut self,
+            player: Vec3,
+            despawn_radius: f32,
+            chunk_pos: IVec3,
+
+            commands: &mut Commands,
+            images: &mut Assets<Image>,
+            chunk_materials: &mut Assets<ChunkMaterial>,
+        ) {
+            self.root.update_chunks(
+                player,
+                despawn_radius,
+                chunk_pos,
+                self.height,
+                self.chunk_size,
+                self.entity,
+                commands,
+                images,
+                chunk_materials,
+                self.voxel_physical_size,
+                &self.materials,
+                &self.cube_handle,
+            )
+        }
+    }
+    #[derive(Clone, Debug)]
+    pub enum ChunkOctreeNode {
+        Node {
+            chunks: Box<[Option<Self>; 8]>,
+            mip: Chunk,
+        },
+        Chunk {
+            voxels: Chunk,
         },
     }
-    impl SparseVoxelOctree {
-        fn root() -> Self {
-            Self::Root {
-                position: Vec3::ZERO,
-                size: 128.0 / 2.0,
-                voxels: Default::default(),
-                levels: 4, // root level 1, chunk level 4
+    impl ChunkOctreeNode {
+        fn new_node(chunk_size: u32) -> Self {
+            let byte = ByteChunk::new_with_size(2usize.pow(chunk_size));
+            let mip1 = byte.mip();
+            let mip2 = mip1.mip();
+            let mip = Chunk {
+                byte,
+                mip1,
+                mip2,
+                entity: None,
+            };
+            Self::Node {
+                chunks: Default::default(),
+                mip,
+            }
+        }
+        fn new_leaf(chunk_size: u32) -> Self {
+            let byte = ByteChunk::new_with_size(2usize.pow(chunk_size));
+            let mip1 = byte.mip();
+            let mip2 = mip1.mip();
+            let chunk = Chunk {
+                byte,
+                mip1,
+                mip2,
+                entity: None,
+            };
+            Self::Chunk { voxels: chunk }
+        }
+        fn mip(&self) -> &Chunk {
+            match self {
+                Self::Node { mip, .. } => mip,
+                Self::Chunk { voxels } => voxels,
+            }
+        }
+        fn mip_mut(&mut self) -> &mut Chunk {
+            match self {
+                Self::Node { mip, .. } => mip,
+                Self::Chunk { voxels } => voxels,
+            }
+        }
+        fn despawn(&mut self, commands: &mut Commands) {
+            match self {
+                Self::Node { chunks, mip } => {
+                    if let Some(e) = mip.entity.take() {
+                        commands.entity(e).despawn();
+                    } else {
+                        chunks
+                            .iter_mut()
+                            .flatten()
+                            .for_each(|c| c.despawn(commands));
+                    }
+                }
+                Self::Chunk { voxels } => {
+                    let _ = voxels.entity.take().map(|e| commands.entity(e).despawn());
+                }
             }
         }
 
-        fn get_mut_chunk(&mut self, mut pos: Vec3) -> Option<ChunkFetchInfo> {
-            let Self::Root {
-                position,
-                size,
-                voxels,
-                levels,
-            } = self
-            else {
-                unreachable!();
-            };
-            // dbg!(pos);
-            // dbg!(&voxels);
-            pos -= *position;
-            let size = *size;
-            pos /= size;
-            if (pos.abs() - Vec3::ONE).max_element() < 0.0 {
-                let mask = if pos.z > 0.0 { 0b100 } else { 0b000 }
-                    | if pos.y > 0.0 { 0b010 } else { 0b000 }
-                    | if pos.x > 0.0 { 0b001 } else { 0b000 };
+        #[allow(clippy::too_many_arguments)]
+        fn update_chunks(
+            &mut self,
+            player: Vec3,
+            despawn_radius: f32,
+            chunk_pos: IVec3,
+            height: u32,
+            chunk_size: u32,
 
-                if voxels[mask].is_none() {
-                    voxels[mask] = Some(Box::new(Self::Leaf {
-                        // chunk: Default::default(),
-                        entity: Entity::PLACEHOLDER,
-                    }));
-                    return voxels[mask].as_mut().map(|t| match &mut *(*t) {
-                        Self::Leaf { entity } => ChunkFetchInfo {
-                            pos: *position + (pos.signum() * size / 2.0),
-                            size: size / 2.0,
-                            // chunk,
-                            chunk_entity: entity,
-                        },
-                        _ => unreachable!(),
-                    });
+            svo_entity: Entity,
+            commands: &mut Commands,
+            images: &mut Assets<Image>,
+            chunk_materials: &mut Assets<ChunkMaterial>,
+            voxel_physical_size: f32,
+            materials: &Handle<Image>,
+            cube_mesh: &Handle<Mesh>,
+        ) {
+            let size = 2i32.pow(height - 2);
+            match self {
+                Self::Node { chunks, mip } => {
+                    chunks
+                        .iter_mut()
+                        .enumerate()
+                        .filter_map(|(i, c)| c.as_mut().map(|c| (i, c)))
+                        .for_each(|(i, c)| {
+                            let pos = chunk_pos;
+                            let mut offset = IVec3::ONE * size;
+                            if i & 0b001 == 0 {
+                                offset.x *= -1;
+                            }
+                            if i & 0b010 == 0 {
+                                offset.y *= -1;
+                            }
+                            if i & 0b100 == 0 {
+                                offset.z *= -1;
+                            }
+
+                            let pos = pos + offset;
+
+                            if (pos.as_vec3() * voxel_physical_size - player).length().abs() > despawn_radius {
+                                c.despawn(commands);
+                                if mip.entity.is_none() {
+                                    mip.spawn(
+                                        svo_entity,
+                                        commands,
+                                        images,
+                                        chunk_materials,
+                                        voxel_physical_size * 2i32.pow(height - chunk_size) as f32,
+                                        materials,
+                                        cube_mesh,
+                                        chunk_pos.as_vec3() * voxel_physical_size,
+                                    );
+                                }
+                            } else {
+                                c.update_chunks(
+                                    player,
+                                    despawn_radius,
+                                    pos,
+                                    height - 1,
+                                    chunk_size,
+                                    svo_entity,
+                                    commands,
+                                    images,
+                                    chunk_materials,
+                                    voxel_physical_size,
+                                    materials,
+                                    cube_mesh,
+                                );
+                            }
+                        });
+                }
+                Self::Chunk { voxels } => {}
+            }
+        }
+
+        // TODO: very inefficient
+        fn update_mip(&mut self, chunk_size: u32) {
+            match self {
+                Self::Chunk { .. } => (),
+                Self::Node { chunks, mip } => {
+                    chunks
+                        .iter_mut()
+                        .flatten()
+                        .for_each(|c| c.update_mip(chunk_size));
+                    let size = 2usize.pow(chunk_size);
+                    let mut byte = ByteChunk::new_with_size(2 * size);
+
+                    // let size = size / 2;
+                    let size = size as _;
+                    chunks
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, c)| c.as_ref().map(|c| (i, c.mip())))
+                        .for_each(|(i, c)| {
+                            let mut offset = UVec3::ZERO;
+                            if i & 0b001 > 0 {
+                                offset.x = size;
+                            }
+                            if i & 0b010 > 0 {
+                                offset.y = size;
+                            }
+                            if i & 0b100 > 0 {
+                                offset.z = size;
+                            }
+                            for z in 0..size {
+                                for y in 0..size {
+                                    for x in 0..size {
+                                        let pos = UVec3::new(x, y, z);
+                                        byte.set(pos + offset, *c.byte.get(pos).unwrap());
+                                    }
+                                }
+                            }
+                        });
+
+                    let byte = byte.mip1_bytechunk();
+                    let mip1 = byte.mip();
+                    let mip2 = mip1.mip();
+                    let chunk = Chunk {
+                        byte,
+                        mip1,
+                        mip2,
+                        entity: None,
+                    };
+                    *mip = chunk;
                 }
             }
-            // dbg!();
-            None
+        }
+
+        // does not update the mips
+        fn set_voxel(&mut self, pos: IVec3, voxel: u8, height: u32, chunk_size: u32) -> u8 {
+            match self {
+                Self::Node { chunks, .. } => {
+                    assert!(height > chunk_size);
+                    let mut index = 0;
+                    let mut offset = IVec3::ONE * 2i32.pow(height - 2);
+                    if pos.z >= 0 {
+                        index |= 0b100;
+                    } else {
+                        offset.z *= -1;
+                    }
+                    if pos.y >= 0 {
+                        index |= 0b010;
+                    } else {
+                        offset.y *= -1;
+                    }
+                    if pos.x >= 0 {
+                        index |= 0b001;
+                    } else {
+                        offset.x *= -1;
+                    }
+                    // dbg!(pos, offset, pos-offset);
+                    chunks[index]
+                        .get_or_insert_with(|| {
+                            if height - 1 == chunk_size {
+                                Self::new_leaf(chunk_size)
+                            } else {
+                                Self::new_node(chunk_size)
+                            }
+                        })
+                        .set_voxel(pos - offset, voxel, height - 1, chunk_size)
+                }
+                Self::Chunk { voxels } => {
+                    assert_eq!(height, chunk_size);
+                    let offset = IVec3::ONE * 2i32.pow(chunk_size - 1);
+                    // dbg!(pos, 2i32.pow(chunk_size - 1), pos + offset);
+                    let pos = pos + offset;
+                    let pos = pos.try_into().unwrap();
+                    voxels.byte.set(pos, voxel).unwrap()
+                }
+            }
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub fn spawn_chunks(
+            &mut self,
+            svo_entity: Entity,
+            commands: &mut Commands,
+            images: &mut Assets<Image>,
+            chunk_materials: &mut Assets<ChunkMaterial>,
+            voxel_physical_size: f32,
+            materials: &Handle<Image>,
+            cube_mesh: &Handle<Mesh>,
+            chunk_pos: IVec3,
+            height: u32,
+        ) {
+            match self {
+                Self::Node { chunks, .. } => {
+                    chunks
+                        .iter_mut()
+                        .enumerate()
+                        .filter_map(|(i, c)| c.as_mut().map(|c| (i, c)))
+                        .for_each(|(i, c)| {
+                            let mut offset = IVec3::ONE * 2i32.pow(height - 2);
+                            if i & 0b100 == 0 {
+                                offset.z *= -1;
+                            }
+                            if i & 0b010 == 0 {
+                                offset.y *= -1;
+                            }
+                            if i & 0b001 == 0 {
+                                offset.x *= -1;
+                            }
+                            let pos = chunk_pos + offset;
+                            c.spawn_chunks(
+                                svo_entity,
+                                commands,
+                                images,
+                                chunk_materials,
+                                voxel_physical_size,
+                                materials,
+                                cube_mesh,
+                                pos,
+                                height - 1,
+                            );
+                        });
+                }
+                Self::Chunk { voxels } => {
+                    voxels.spawn(
+                        svo_entity,
+                        commands,
+                        images,
+                        chunk_materials,
+                        voxel_physical_size,
+                        materials,
+                        cube_mesh,
+                        chunk_pos.as_vec3() * voxel_physical_size,
+                    );
+                }
+            }
         }
     }
 
@@ -1797,6 +2136,70 @@ mod chunk {
                 side,
                 voxels: new_voxels,
             }
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct Chunk {
+        byte: ByteChunk,
+        mip1: MipChunk,
+        mip2: MipChunk,
+        entity: Option<Entity>,
+    }
+    impl Chunk {
+        fn update_mips(&mut self) {
+            self.mip1 = self.byte.mip();
+            self.mip2 = self.mip1.mip();
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn spawn(
+            &mut self,
+            svo_entity: Entity,
+            commands: &mut Commands,
+            images: &mut Assets<Image>,
+            chunk_materials: &mut Assets<ChunkMaterial>,
+            voxel_physical_size: f32,
+            materials: &Handle<Image>,
+            cube_mesh: &Handle<Mesh>,
+            chunk_pos: Vec3,
+        ) {
+            let chunk = &self.byte;
+
+            let side = chunk.side;
+
+            let mip1 = chunk.mip();
+            let mip2 = mip1.mip();
+            let voxels_handle = images.add(chunk.clone().to_image());
+            let mip1_handle = images.add(mip1.into_image());
+            let mip2_handle = images.add(mip2.into_image());
+
+            let chunk_material = chunk_materials.add(ChunkMaterial {
+                side: side as _,
+                voxels: voxels_handle.clone(),
+                materials: materials.clone(),
+                chunk_position: chunk_pos,
+                voxel_size: voxel_physical_size,
+                voxels_mip1: mip1_handle,
+                voxels_mip2: mip2_handle,
+            });
+
+            commands.entity(svo_entity).with_children(|builder| {
+                let id = builder
+                    .spawn((
+                        Name::new("VoxChunk"),
+                        vox::VoxChunk,
+                        MaterialMeshBundle {
+                            mesh: cube_mesh.clone(),
+                            material: chunk_material,
+                            transform: Transform::from_translation(chunk_pos)
+                                .with_scale(Vec3::NEG_ONE * voxel_physical_size * side as f32 / 2.0),
+                            ..Default::default()
+                        },
+                    ))
+                    .id();
+                self.entity = Some(id);
+            });
         }
     }
 
@@ -2028,7 +2431,7 @@ mod chunk {
     }
 
     #[derive(Component, Clone, Debug)]
-    pub struct Chunk {
+    pub struct ChunkHandle {
         // TODO: turn these to have a runtime parameter of size: UVec3
         pub side: usize,
         pub voxels: Handle<Image>,
@@ -2036,7 +2439,7 @@ mod chunk {
     }
 
     /// N should be a multiple of 4
-    impl Chunk {
+    impl ChunkHandle {
         pub fn empty(assets: &mut Assets<Image>) -> Self {
             Self {
                 voxels: assets.add(
@@ -2079,7 +2482,7 @@ mod chunk {
         #[uniform(5)]
         pub chunk_position: Vec3,
         #[uniform(6)]
-        pub chunk_size: f32,
+        pub voxel_size: f32,
         #[texture(1, sample_type = "u_int", dimension = "3d")]
         pub voxels: Handle<Image>,
         #[texture(7, sample_type = "u_int", dimension = "3d")]
@@ -2108,22 +2511,6 @@ mod chunk {
         let world = VoxelWorld { noise: perlin };
         commands.insert_resource(world);
         game_state.set(AppState::Playing);
-
-        // commands.spawn(DirectionalLightBundle {
-        //     directional_light: DirectionalLight {
-        //         illuminance: 3000.0,
-        //         shadows_enabled: true,
-        //         ..Default::default()
-        //     },
-        //     transform: Transform::from_xyz(1.0, 1.0, 1.0)
-        //         .with_rotation(Quat::from_axis_angle(Vec3::X, 3.5)),
-        //     ..Default::default()
-        // });
-        // commands.spawn((
-        //     SparseVoxelOctree::root(),
-        //     TransformBundle::default(),
-        //     VisibilityBundle::default(),
-        // ));
     }
 
     /*
@@ -2328,8 +2715,8 @@ mod vox {
     use dot_vox::{DotVoxData, Model, SceneNode};
 
     use crate::chunk::{
-        ByteChunk, Chunk, ChunkMaterial, ChunkTrait, L1ChunkOctree, L2ChunkOctree, TiledChunker,
-        DEFAULT_CHUNK_SIDE,
+        ByteChunk, ChunkHandle, ChunkMaterial, ChunkTrait, L1ChunkOctree, L2ChunkOctree,
+        TiledChunker, ChunkOctree, DEFAULT_CHUNK_SIDE,
     };
 
     #[derive(Component, Clone, Copy)]
@@ -2562,6 +2949,55 @@ mod vox {
 
             tc
         }
+
+        // very similar to self.tiled_chunker()
+        /// chunk_size in log2
+        fn svo(
+            &self,
+            chunk_size: u32,
+            entity: Entity,
+            images: &mut Assets<Image>,
+            meshes: &mut Assets<Mesh>,
+        ) -> ChunkOctree {
+            let material_handle = images.add(ChunkHandle::material_image(self.get_materials()));
+            let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
+
+            let mut svo = ChunkOctree::new(
+                chunk_size + 5,
+                chunk_size,
+                cube_handle,
+                material_handle,
+                entity,
+            );
+
+            for model in self.models.iter() {
+                let chunk_pos = model.translation;
+                let pivot = Vec3::new(
+                    (model.model.size.x / 2) as _,
+                    (model.model.size.y / 2) as _,
+                    (model.model.size.z / 2) as _,
+                );
+
+                for voxel in &model.model.voxels {
+                    let voxel_pos = IVec3::new(voxel.x as _, voxel.y as _, voxel.z as _);
+
+                    let voxel_pos =
+                        Vec3::new(voxel_pos.x as _, voxel_pos.y as _, voxel_pos.z as _) - pivot;
+                    let voxel_pos = model.rotation.mul_vec3(voxel_pos);
+                    let voxel_pos = IVec3::new(
+                        voxel_pos.x.round() as _,
+                        voxel_pos.y.round() as _,
+                        voxel_pos.z.round() as _,
+                    );
+
+                    svo.set_voxel(chunk_pos + voxel_pos, voxel.i)
+                        .expect("invalid index");
+                }
+            }
+            svo.update_mip();
+
+            svo
+        }
     }
 
     fn load_vox(
@@ -2587,113 +3023,29 @@ mod vox {
             models: vec![],
         };
         parser.parse(0, IVec3::default(), Quat::default(), Vec3::ZERO);
-        // let models = parser
-        //     .models
-        //     .iter()
-        //     .map(|m| {
-        //         (
-        //             m.translation,
-        //             m.translation
-        //                 + IVec3::new(
-        //                     m.model.size.x as _,
-        //                     m.model.size.z as _,
-        //                     m.model.size.y as _,
-        //                 ),
-        //         )
-        //     })
-        //     .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)));
-        // dbg!(models);
 
-        let side = DEFAULT_CHUNK_SIDE as usize;
-        // let side = 256;
-        let size = 16.0;
-        let tc = parser.tiled_chunker(side);
-        let material_handle = images.add(Chunk::material_image(parser.get_materials()));
-        let cube_handle = meshes.add(Mesh::from(shape::Cube { size: size * 2.0 }));
-        for (chunk_index, chunk) in tc.chunks.into_iter() {
-            let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
-            let chunk_pos = chunk_pos * size * 2.0;
-
-            let side = chunk.side;
-
-            let mip1 = chunk.mip();
-            let mip2 = mip1.mip();
-            let voxels_handle = images.add(chunk.to_image());
-            let mip1_handle = images.add(mip1.into_image());
-            let mip2_handle = images.add(mip2.into_image());
-            let chunk = Chunk {
-                voxels: voxels_handle.clone(),
-                materials: material_handle.clone(),
-                side,
-            };
-
-            let chunk_material = chunk_materials.add(ChunkMaterial {
-                side: side as _,
-                voxels: voxels_handle.clone(),
-                materials: material_handle.clone(),
-                chunk_position: chunk_pos,
-                chunk_size: size,
-                voxels_mip1: mip1_handle,
-                voxels_mip2: mip2_handle,
-            });
-
-            commands.entity(vox_scene_entity).with_children(|builder| {
-                builder.spawn((
-                    Name::new("VoxChunk"),
-                    VoxChunk,
-                    MaterialMeshBundle {
-                        mesh: cube_handle.clone(),
-                        // material: std_materials.add(StandardMaterial {
-                        //     base_color: Color::rgb(0.8, 0.8, 0.8),
-                        //     alpha_mode: AlphaMode::Opaque,
-                        //     ..Default::default()
-                        // }),
-                        material: chunk_material,
-                        transform: Transform::from_translation(chunk_pos).with_scale(Vec3::NEG_ONE),
-                        ..Default::default()
-                    },
-                    chunk,
-                ));
-            });
-        }
-        // todo!();
+        let mut svo = parser.svo(7, vox_scene_entity, images, meshes);
+        svo.spawn_chunks(commands, images, chunk_materials);
+        commands.entity(vox_scene_entity).insert(svo);
 
         // let side = DEFAULT_CHUNK_SIDE as usize;
+        // // let side = 256;
         // let size = 16.0;
+        // let tc = parser.tiled_chunker(side);
+        // let material_handle = images.add(ChunkHandle::material_image(parser.get_materials()));
+        // let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
+        // for (chunk_index, chunk) in tc.chunks.into_iter() {
+        //     let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
+        //     let chunk_pos = chunk_pos * size * 2.0;
 
-        // let materials = [Vec4::splat(0.0)]
-        //     .into_iter()
-        //     .chain(
-        //         data.palette
-        //             .iter()
-        //             .map(|c| Vec4::new(c.r as f32, c.g as f32, c.b as f32, c.a as f32)),
-        //     )
-        //     .map(|c| c / 256.0)
-        //     .take(256) // idk why this buffer has 1 extra material :/
-        //     .collect::<Vec<_>>();
-        // let material_handle = images.add(Chunk::material_image(materials));
-        // let cube_handle = meshes.add(Mesh::from(shape::Cube { size: size * 2.0 }));
+        //     let side = chunk.side;
 
-        // let mut chunks = HashMap::new();
-
-        // // TODO: vox chunks can be of side 256, but this code crashes on chunk size > DEFAULT_CHUNK_SIDE
-        // for (i, model) in data.models.iter().enumerate() {
-        //     let mut voxels = ByteChunk {
-        //         voxels: vec![0u8; side.pow(3)],
-        //         side,
-        //     };
-        //     for voxel in &model.voxels {
-        //         let _ = voxels.set(
-        //             UVec3::new(voxel.x as _, voxel.z as _, voxel.y as _),
-        //             voxel.i + 1,
-        //         );
-        //     }
-        //     let mip1 = voxels.mip();
+        //     let mip1 = chunk.mip();
         //     let mip2 = mip1.mip();
-        //     let voxels_handle = images.add(voxels.to_image());
+        //     let voxels_handle = images.add(chunk.to_image());
         //     let mip1_handle = images.add(mip1.into_image());
         //     let mip2_handle = images.add(mip2.into_image());
-        //     let chunk = Chunk {
+        //     let chunk = ChunkHandle {
         //         voxels: voxels_handle.clone(),
         //         materials: material_handle.clone(),
         //         side,
@@ -2703,136 +3055,32 @@ mod vox {
         //         side: side as _,
         //         voxels: voxels_handle.clone(),
         //         materials: material_handle.clone(),
-        //         player_position: Vec3::ZERO,
-        //         resolution: Vec2::ZERO,
-        //         chunk_position: Vec3::ZERO,
+        //         chunk_position: chunk_pos,
         //         chunk_size: size,
         //         voxels_mip1: mip1_handle,
         //         voxels_mip2: mip2_handle,
         //     });
 
-        //     commands.entity(vox_scene_entity).with_children(|castle| {
-        //         let chunk_entity = castle
-        //             .spawn((
-        //                 Name::new("VoxChunk"),
-        //                 VoxChunk,
-        //                 MaterialMeshBundle {
-        //                     mesh: cube_handle.clone(),
-        //                     // material: std_materials.add(StandardMaterial {
-        //                     //     base_color: Color::rgb(0.8, 0.8, 0.8),
-        //                     //     alpha_mode: AlphaMode::Opaque,
-        //                     //     ..Default::default()
-        //                     // }),
-        //                     material: chunk_material,
-        //                     visibility: Visibility::Visible,
-        //                     ..Default::default()
-        //                 },
-        //                 chunk,
-        //             ))
-        //             .id();
-
-        //         chunks.insert(i, chunk_entity);
+        //     commands.entity(vox_scene_entity).with_children(|builder| {
+        //         builder.spawn((
+        //             Name::new("VoxChunk"),
+        //             VoxChunk,
+        //             MaterialMeshBundle {
+        //                 mesh: cube_handle.clone(),
+        //                 // material: std_materials.add(StandardMaterial {
+        //                 //     base_color: Color::rgb(0.8, 0.8, 0.8),
+        //                 //     alpha_mode: AlphaMode::Opaque,
+        //                 //     ..Default::default()
+        //                 // }),
+        //                 material: chunk_material,
+        //                 transform: Transform::from_translation(chunk_pos)
+        //                     .with_scale(Vec3::NEG_ONE * size),
+        //                 ..Default::default()
+        //             },
+        //             chunk,
+        //         ));
         //     });
         // }
-
-        // #[allow(clippy::too_many_arguments)]
-        // fn set_transforms(
-        //     scene_index: usize,
-        //     chunks: &HashMap<usize, Entity>,
-        //     commands: &mut Commands,
-        //     scenes: &[SceneNode],
-        //     models: &[Model],
-        //     translation: Vec3,
-        //     rotation: Quat,
-        //     scale: Vec3,
-        //     voxel_size: f32,
-        // ) {
-        //     let scene = &scenes[scene_index];
-        //     match scene {
-        //         SceneNode::Transform { frames, child, .. } => {
-        //             assert_eq!(frames.len(), 1, "unimplemented");
-        //             let frame = &frames[0];
-        //             let translation = translation
-        //                 + frame
-        //                     .position()
-        //                     .map(|p| Vec3::new(p.x as _, p.z as _, p.y as _))
-        //                     .unwrap_or_default();
-        //             let (rotation, scale) = frame
-        //                 .orientation()
-        //                 .map(|o| o.to_quat_scale())
-        //                 .map(|(q, f)| {
-        //                     (Quat::from_xyzw(q[0], q[2], q[1], q[3]), Vec3::from_array(f))
-        //                 })
-        //                 .unwrap_or_default();
-
-        //             set_transforms(
-        //                 *child as _,
-        //                 chunks,
-        //                 commands,
-        //                 scenes,
-        //                 models,
-        //                 translation,
-        //                 rotation,
-        //                 scale,
-        //                 voxel_size,
-        //             );
-        //         }
-        //         SceneNode::Group { children, .. } => {
-        //             children.iter().for_each(|child| {
-        //                 set_transforms(
-        //                     *child as _,
-        //                     chunks,
-        //                     commands,
-        //                     scenes,
-        //                     models,
-        //                     translation,
-        //                     rotation,
-        //                     scale,
-        //                     voxel_size,
-        //                 );
-        //             });
-        //         }
-        //         SceneNode::Shape {
-        //             models: shape_models,
-        //             ..
-        //         } => {
-        //             assert_eq!(shape_models.len(), 1, "unimplemented");
-        //             let Some(&chunk) = chunks.get(&(shape_models[0].model_id as usize)) else {
-        //                 return;
-        //             };
-        //             let model = &models[shape_models[0].model_id as usize];
-
-        //             let mut offset = Vec3::new(
-        //                 if model.size.x % 2 == 0 { 0.0 } else { 0.5 },
-        //                 if model.size.z % 2 == 0 { 0.0 } else { 0.5 },
-        //                 if model.size.y % 2 == 0 { 0.0 } else { -0.5 },
-        //             );
-        //             offset = rotation.mul_vec3(offset);
-        //             let center = rotation
-        //                 * (Vec3::new(model.size.x as _, model.size.y as _, model.size.z as _)
-        //                     / 2.0);
-        //             let translation = translation - center * scale + offset;
-
-        //             commands.entity(chunk).insert(
-        //                 Transform::from_translation(translation * voxel_size)
-        //                     .with_scale(Vec3::NEG_ONE)
-        //                     .with_rotation(rotation), //.with_scale(scale),
-        //             );
-        //         }
-        //     }
-        // }
-
-        // set_transforms(
-        //     0,
-        //     &chunks,
-        //     commands,
-        //     &data.scenes,
-        //     &data.models,
-        //     Vec3::default(),
-        //     Quat::default(),
-        //     Vec3::ZERO,
-        //     size / 256.0, // 256 is the maximum chunk size in the vox format
-        // );
     }
 }
 

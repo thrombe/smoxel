@@ -2,7 +2,7 @@
 
 @group(1) @binding(0) var<uniform> side: u32;
 @group(1) @binding(5) var<uniform> chunk_pos: vec3<f32>;
-@group(1) @binding(6) var<uniform> chunk_size: f32;
+@group(1) @binding(6) var<uniform> voxel_size: f32;
 
 @group(1) @binding(1) var voxels: texture_3d<u32>;
 @group(1) @binding(7) var voxels_mip1: texture_3d<u32>;
@@ -131,13 +131,15 @@ fn fragment(mesh: VertexOutput) -> Output {
     if true {
         // out.color =  vec4<f32>((mesh.world_position.xyz - chunk_pos)/1000.0, 1.0);
         // out.color = vec4<f32>(mesh.uv, 0.0, 1.0);
+        // out.color = vec4<f32>(abs(chunk_pos.xz - world_data.player_pos.xz)/100.0, 0.0, 0.0);
+        // out.color = vec4(chunk_pos.xz - mesh.world_position.xz, 0.0, 0.0);
         // return out;
     }
     let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
     let ray_origin = world_data.player_pos.xyz;
     let backface_hit_pos = mesh.world_position.xyz;
     let ray_dir = normalize(backface_hit_pos - ray_origin);
-    let voxel_size = chunk_size * 2.0 / f32(side);
+    let chunk_size = f32(side) * voxel_size / 2.0;
     let chunk_center = chunk_pos;
 
     #ifdef CHUNK_DEPTH_PREPASS
