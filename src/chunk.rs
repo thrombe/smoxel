@@ -1,19 +1,16 @@
-use bevy::pbr::DefaultOpaqueRendererMethod;
-use bevy::render::extract_component::ExtractComponent;
-use bevy::render::mesh::{Indices, VertexAttributeValues};
-use bevy::render::render_resource::{
-    Extent3d, PrimitiveTopology, TextureDimension, TextureFormat,
+use bevy::{
+    prelude::*,
+    render::{
+        extract_component::ExtractComponent,
+        render_resource::{AsBindGroup, Extent3d, ShaderRef, TextureDimension, TextureFormat},
+    },
+    tasks::Task,
+    utils::HashMap,
 };
-use bevy::render::texture::TextureFormatPixelInfo;
-use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
-use bevy::utils::HashMap;
-use block_mesh::ndshape::ConstShape3u32;
-use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, VoxelVisibility};
-use noise::NoiseFn;
 
-use crate::player::PlayerEntity;
+use block_mesh::{MergeVoxel, Voxel, VoxelVisibility};
 
-use super::*;
+use crate::{player::PlayerEntity, vox, AppState};
 
 pub struct VoxelPlugin;
 impl Plugin for VoxelPlugin {
@@ -369,8 +366,7 @@ impl ChunkOctreeNode {
                                     commands,
                                     images,
                                     chunk_materials,
-                                    voxel_physical_size
-                                        * 2i32.pow(height - chunk_height) as f32,
+                                    voxel_physical_size * 2i32.pow(height - chunk_height) as f32,
                                     materials,
                                     cube_mesh,
                                     chunk_pos.as_vec3() * voxel_physical_size,
@@ -829,9 +825,8 @@ impl Chunk {
                     MaterialMeshBundle {
                         mesh: cube_mesh.clone(),
                         material: chunk_material,
-                        transform: Transform::from_translation(chunk_pos).with_scale(
-                            Vec3::NEG_ONE * voxel_physical_size * side as f32 / 2.0,
-                        ),
+                        transform: Transform::from_translation(chunk_pos)
+                            .with_scale(Vec3::NEG_ONE * voxel_physical_size * side as f32 / 2.0),
                         ..Default::default()
                     },
                 ))
@@ -1152,193 +1147,193 @@ fn setup_voxel_plugin(mut commands: Commands, mut game_state: ResMut<NextState<A
 }
 
 /*
-    fn spawn_chunk_tasks(
-        mut commands: Commands,
-        world: Res<VoxelWorld>,
-        mut svo: Query<(Entity, &mut SparseVoxelOctree)>,
-        players: Query<(&PlayerEntity, &Transform)>,
-    ) {
-        let threadpool = AsyncComputeTaskPool::get();
+fn spawn_chunk_tasks(
+    mut commands: Commands,
+    world: Res<VoxelWorld>,
+    mut svo: Query<(Entity, &mut SparseVoxelOctree)>,
+    players: Query<(&PlayerEntity, &Transform)>,
+) {
+    let threadpool = AsyncComputeTaskPool::get();
 
-        let (_, player) = players.single();
+    let (_, player) = players.single();
 
-        for (svo_entity, mut svo) in svo.iter_mut() {
-            let Some(chunk) = svo.get_mut_chunk(player.translation) else {
-                return;
-            };
-            dbg!("spawining shunk", chunk.pos, chunk.size);
+    for (svo_entity, mut svo) in svo.iter_mut() {
+        let Some(chunk) = svo.get_mut_chunk(player.translation) else {
+            return;
+        };
+        dbg!("spawining shunk", chunk.pos, chunk.size);
 
-            let size = chunk.size;
-            let pos = chunk.pos;
-            let perlin = world.noise;
-            let task = threadpool.spawn(async move {
-                let side = DEFAULT_CHUNK_SIDE as usize;
-                let pside = PADDED_DEFAULT_CHUNK_SIDE as usize;
-                let mut voxels = U8VoxelChunk(vec![U8Voxel(0); pside * pside * pside]);
-                let scale = 0.09;
-                for z in 0..side {
-                    for x in 0..side {
-                        let xf =
-                            ((x as f32 - side as f32 / 2.0) / side as f32) * size * 2.0 + pos.x;
-                        let zf =
-                            ((z as f32 - side as f32 / 2.0) / side as f32) * size * 2.0 + pos.z;
-                        let v = perlin.get([xf as f64 * scale, zf as f64 * scale]);
+        let size = chunk.size;
+        let pos = chunk.pos;
+        let perlin = world.noise;
+        let task = threadpool.spawn(async move {
+            let side = DEFAULT_CHUNK_SIDE as usize;
+            let pside = PADDED_DEFAULT_CHUNK_SIDE as usize;
+            let mut voxels = U8VoxelChunk(vec![U8Voxel(0); pside * pside * pside]);
+            let scale = 0.09;
+            for z in 0..side {
+                for x in 0..side {
+                    let xf =
+                        ((x as f32 - side as f32 / 2.0) / side as f32) * size * 2.0 + pos.x;
+                    let zf =
+                        ((z as f32 - side as f32 / 2.0) / side as f32) * size * 2.0 + pos.z;
+                    let v = perlin.get([xf as f64 * scale, zf as f64 * scale]);
 
-                        for y in 0..side {
-                            let yf =
-                                ((y as f32 - side as f32 / 2.0) / side as f32) * size * 2.0 + pos.y;
-                            if (yf as f64 + 20.0) < v * 10.0 {
-                                voxels.0[(z + 1) * pside * pside + (y + 1) * pside + (x + 1)] =
-                                    U8Voxel(1);
-                            }
+                    for y in 0..side {
+                        let yf =
+                            ((y as f32 - side as f32 / 2.0) / side as f32) * size * 2.0 + pos.y;
+                        if (yf as f64 + 20.0) < v * 10.0 {
+                            voxels.0[(z + 1) * pside * pside + (y + 1) * pside + (x + 1)] =
+                                U8Voxel(1);
                         }
                     }
                 }
-                let mut buffer = GreedyQuadsBuffer::new(voxels.0.len());
-                type ChunkShape = ConstShape3u32<
-                    PADDED_DEFAULT_CHUNK_SIDE,
-                    PADDED_DEFAULT_CHUNK_SIDE,
-                    PADDED_DEFAULT_CHUNK_SIDE,
-                >;
-                let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
-                greedy_quads(
-                    &voxels.0,
-                    &ChunkShape {},
-                    [0; 3],
-                    [DEFAULT_CHUNK_SIDE + 1; 3],
-                    faces,
-                    &mut buffer,
-                );
-
-                let num_indices = buffer.quads.num_quads() * 6;
-                let num_vertices = buffer.quads.num_quads() * 4;
-                let mut indices = Vec::with_capacity(num_indices);
-                let mut positions = Vec::with_capacity(num_vertices);
-                let mut normals = Vec::with_capacity(num_vertices);
-                for (group, face) in buffer.quads.groups.into_iter().zip(faces.iter()) {
-                    for quad in group.into_iter() {
-                        indices.extend_from_slice(&face.quad_mesh_indices(positions.len() as u32));
-                        positions.extend_from_slice(
-                            &face
-                                .quad_mesh_positions(&quad, 2.0 * size / DEFAULT_CHUNK_SIDE as f32),
-                        );
-                        normals.extend_from_slice(&face.quad_mesh_normals());
-                    }
-                }
-
-                let mut render_mesh = Mesh::new(PrimitiveTopology::TriangleList);
-                render_mesh.insert_attribute(
-                    Mesh::ATTRIBUTE_POSITION,
-                    VertexAttributeValues::Float32x3(positions),
-                );
-                render_mesh.insert_attribute(
-                    Mesh::ATTRIBUTE_NORMAL,
-                    VertexAttributeValues::Float32x3(normals),
-                );
-                render_mesh.insert_attribute(
-                    Mesh::ATTRIBUTE_UV_0,
-                    VertexAttributeValues::Float32x2(vec![[0.0; 2]; num_vertices]),
-                );
-                render_mesh.set_indices(Some(Indices::U32(indices.clone())));
-
-                ((voxels, pos, size), render_mesh)
-            });
-
-            *chunk.chunk_entity = commands.spawn_empty().id();
-            commands
-                .entity(*chunk.chunk_entity)
-                .insert(ChunkSpawnTask { task });
-
-            commands.entity(svo_entity).add_child(*chunk.chunk_entity);
-        }
-    }
-
-    fn resolve_chunk_tasks<const N: usize>(
-        mut commands: Commands,
-        mut meshes: ResMut<Assets<Mesh>>,
-        mut materials: ResMut<Assets<StandardMaterial>>,
-        mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
-        mut images: ResMut<Assets<Image>>,
-        mut tasks: Query<(Entity, &mut ChunkSpawnTask<N>)>,
-    ) {
-        for (task_entity, mut task) in tasks.iter_mut() {
-            // tasks can be cancelled. so it returns an Option
-            if let Some(((voxels, pos, size), mesh)) =
-                block_on(futures_lite::future::poll_once(&mut task.task))
-            {
-                let empty_mesh = mesh.count_vertices() == 0;
-
-                let mesh_handle = meshes.add(mesh);
-                let mut material_buffer = vec![Default::default(); 256];
-                material_buffer[1] = Vec4::new(0.8, 0.8, 0.8, 1.0);
-                // let chunk = DefaultChunk::from_u8voxels(&mut images, voxels, material_buffer);
-                let chunk = DefaultChunk {
-                    voxels: images.add(voxels.byte_chunk().to_image()),
-                    materials: images.add(DefaultChunk::material_image(material_buffer)),
-                };
-
-                let r = (DEFAULT_CHUNK_SIDE as f32 + 2.0) / (DEFAULT_CHUNK_SIDE as f32);
-                let bb_mesh_relative_pos = Vec3::ZERO;
-                let voxel_mesh_relative_pos = Vec3::splat(-size * r);
-                commands
-                    .entity(task_entity)
-                    .insert((
-                        TransformBundle::from_transform(Transform::from_translation(pos)),
-                        VisibilityBundle::default(),
-                    ))
-                    .remove::<ChunkSpawnTask<N>>();
-
-                if empty_mesh {
-                    continue;
-                }
-
-                commands
-                    .entity(task_entity)
-                    .with_children(|parent| {
-                        parent.spawn((
-                            MaterialMeshBundle {
-                                mesh: meshes.add(Mesh::from(shape::Cube { size: size * 2.0 })),
-                                material: chunk_materials.add(ChunkMaterial {
-                                    side: DEFAULT_CHUNK_SIDE,
-                                    voxels: chunk.voxels.clone(),
-                                    materials: chunk.materials.clone(),
-                                    player_position: Vec3::ZERO,
-                                    resolution: Vec2::ZERO,
-                                    chunk_position: Vec3::ZERO,
-                                    chunk_size: size,
-                                }),
-                                visibility: Visibility::Visible,
-                                transform: Transform::from_translation(bb_mesh_relative_pos),
-                                ..Default::default()
-                            },
-                            Name::new("Cube Mesh"),
-                        ));
-                        parent.spawn((
-                            MaterialMeshBundle {
-                                mesh: mesh_handle.clone(),
-                                // material: materials.add(StandardMaterial {
-                                //     base_color: Color::rgb(0.8, 0.8, 0.8),
-                                //     alpha_mode: AlphaMode::Opaque,
-                                //     ..Default::default()
-                                // }),
-                                material: chunk_materials.add(ChunkMaterial {
-                                    side: DEFAULT_CHUNK_SIDE,
-                                    voxels: chunk.voxels.clone(),
-                                    materials: chunk.materials.clone(),
-                                    player_position: Vec3::ZERO,
-                                    resolution: Vec2::ZERO,
-                                    chunk_position: Vec3::ZERO,
-                                    chunk_size: size,
-                                }),
-                                transform: Transform::from_translation(voxel_mesh_relative_pos),
-                                visibility: Visibility::Hidden,
-                                ..Default::default()
-                            },
-                            Name::new("Voxel Mesh"),
-                        ));
-                    })
-                    .insert((Name::new("Chunk"), chunk));
             }
+            let mut buffer = GreedyQuadsBuffer::new(voxels.0.len());
+            type ChunkShape = ConstShape3u32<
+                PADDED_DEFAULT_CHUNK_SIDE,
+                PADDED_DEFAULT_CHUNK_SIDE,
+                PADDED_DEFAULT_CHUNK_SIDE,
+            >;
+            let faces = &block_mesh::RIGHT_HANDED_Y_UP_CONFIG.faces;
+            greedy_quads(
+                &voxels.0,
+                &ChunkShape {},
+                [0; 3],
+                [DEFAULT_CHUNK_SIDE + 1; 3],
+                faces,
+                &mut buffer,
+            );
+
+            let num_indices = buffer.quads.num_quads() * 6;
+            let num_vertices = buffer.quads.num_quads() * 4;
+            let mut indices = Vec::with_capacity(num_indices);
+            let mut positions = Vec::with_capacity(num_vertices);
+            let mut normals = Vec::with_capacity(num_vertices);
+            for (group, face) in buffer.quads.groups.into_iter().zip(faces.iter()) {
+                for quad in group.into_iter() {
+                    indices.extend_from_slice(&face.quad_mesh_indices(positions.len() as u32));
+                    positions.extend_from_slice(
+                        &face
+                            .quad_mesh_positions(&quad, 2.0 * size / DEFAULT_CHUNK_SIDE as f32),
+                    );
+                    normals.extend_from_slice(&face.quad_mesh_normals());
+                }
+            }
+
+            let mut render_mesh = Mesh::new(PrimitiveTopology::TriangleList);
+            render_mesh.insert_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                VertexAttributeValues::Float32x3(positions),
+            );
+            render_mesh.insert_attribute(
+                Mesh::ATTRIBUTE_NORMAL,
+                VertexAttributeValues::Float32x3(normals),
+            );
+            render_mesh.insert_attribute(
+                Mesh::ATTRIBUTE_UV_0,
+                VertexAttributeValues::Float32x2(vec![[0.0; 2]; num_vertices]),
+            );
+            render_mesh.set_indices(Some(Indices::U32(indices.clone())));
+
+            ((voxels, pos, size), render_mesh)
+        });
+
+        *chunk.chunk_entity = commands.spawn_empty().id();
+        commands
+            .entity(*chunk.chunk_entity)
+            .insert(ChunkSpawnTask { task });
+
+        commands.entity(svo_entity).add_child(*chunk.chunk_entity);
+    }
+}
+
+fn resolve_chunk_tasks<const N: usize>(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    mut tasks: Query<(Entity, &mut ChunkSpawnTask<N>)>,
+) {
+    for (task_entity, mut task) in tasks.iter_mut() {
+        // tasks can be cancelled. so it returns an Option
+        if let Some(((voxels, pos, size), mesh)) =
+            block_on(futures_lite::future::poll_once(&mut task.task))
+        {
+            let empty_mesh = mesh.count_vertices() == 0;
+
+            let mesh_handle = meshes.add(mesh);
+            let mut material_buffer = vec![Default::default(); 256];
+            material_buffer[1] = Vec4::new(0.8, 0.8, 0.8, 1.0);
+            // let chunk = DefaultChunk::from_u8voxels(&mut images, voxels, material_buffer);
+            let chunk = DefaultChunk {
+                voxels: images.add(voxels.byte_chunk().to_image()),
+                materials: images.add(DefaultChunk::material_image(material_buffer)),
+            };
+
+            let r = (DEFAULT_CHUNK_SIDE as f32 + 2.0) / (DEFAULT_CHUNK_SIDE as f32);
+            let bb_mesh_relative_pos = Vec3::ZERO;
+            let voxel_mesh_relative_pos = Vec3::splat(-size * r);
+            commands
+                .entity(task_entity)
+                .insert((
+                    TransformBundle::from_transform(Transform::from_translation(pos)),
+                    VisibilityBundle::default(),
+                ))
+                .remove::<ChunkSpawnTask<N>>();
+
+            if empty_mesh {
+                continue;
+            }
+
+            commands
+                .entity(task_entity)
+                .with_children(|parent| {
+                    parent.spawn((
+                        MaterialMeshBundle {
+                            mesh: meshes.add(Mesh::from(shape::Cube { size: size * 2.0 })),
+                            material: chunk_materials.add(ChunkMaterial {
+                                side: DEFAULT_CHUNK_SIDE,
+                                voxels: chunk.voxels.clone(),
+                                materials: chunk.materials.clone(),
+                                player_position: Vec3::ZERO,
+                                resolution: Vec2::ZERO,
+                                chunk_position: Vec3::ZERO,
+                                chunk_size: size,
+                            }),
+                            visibility: Visibility::Visible,
+                            transform: Transform::from_translation(bb_mesh_relative_pos),
+                            ..Default::default()
+                        },
+                        Name::new("Cube Mesh"),
+                    ));
+                    parent.spawn((
+                        MaterialMeshBundle {
+                            mesh: mesh_handle.clone(),
+                            // material: materials.add(StandardMaterial {
+                            //     base_color: Color::rgb(0.8, 0.8, 0.8),
+                            //     alpha_mode: AlphaMode::Opaque,
+                            //     ..Default::default()
+                            // }),
+                            material: chunk_materials.add(ChunkMaterial {
+                                side: DEFAULT_CHUNK_SIDE,
+                                voxels: chunk.voxels.clone(),
+                                materials: chunk.materials.clone(),
+                                player_position: Vec3::ZERO,
+                                resolution: Vec2::ZERO,
+                                chunk_position: Vec3::ZERO,
+                                chunk_size: size,
+                            }),
+                            transform: Transform::from_translation(voxel_mesh_relative_pos),
+                            visibility: Visibility::Hidden,
+                            ..Default::default()
+                        },
+                        Name::new("Voxel Mesh"),
+                    ));
+                })
+                .insert((Name::new("Chunk"), chunk));
         }
     }
-    */
+}
+*/

@@ -1,13 +1,11 @@
 use bevy::{
-    core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass, NormalPrepass},
-    diagnostic::{DiagnosticsPlugin, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     input::mouse::MouseMotion,
-    pbr::{wireframe::WireframePlugin, NotShadowCaster, PbrPlugin},
+    pbr::{wireframe::WireframePlugin, PbrPlugin},
     prelude::*,
     reflect::TypePath,
     render::{
-        render_resource::{AsBindGroup, ShaderRef, ShaderType},
-        settings::PowerPreference,
+        render_resource::{AsBindGroup, ShaderRef},
         RenderPlugin,
     },
     window::{CursorGrabMode, PrimaryWindow},
@@ -18,7 +16,6 @@ use bevy_inspector_egui::{
     bevy_egui::{self, EguiContexts},
     quick::WorldInspectorPlugin,
 };
-use chunk::ChunkMaterial;
 
 fn main() {
     let mut app = App::new();
@@ -76,7 +73,7 @@ fn main() {
     .add_plugins(WireframePlugin)
     .add_plugins(render::RenderPlugin)
     .add_plugins(player::PlayerPlugin)
-    .add_plugins(spectator::Spectator)
+    .add_plugins(player::spectator::Spectator)
     .add_plugins(chunk::VoxelPlugin)
     .add_plugins(vox::VoxLoader)
     .add_systems(Startup, setup)

@@ -2,106 +2,67 @@ use core::panic;
 use std::{cmp::Reverse, ops::Range};
 
 use bevy::{
-    app::{Plugin, Startup},
-    asset::{load_internal_asset, AssetApp, AssetEvent, AssetId, AssetServer, Assets, Handle},
-    core::Name,
+    app::Plugin,
+    asset::{AssetApp, AssetEvent, AssetId, AssetServer, Assets, Handle},
     core_pipeline::{
-        clear_color::ClearColorConfig,
-        core_3d::{
-            self,
-            graph::{
-                input::VIEW_ENTITY,
-                node::{END_MAIN_PASS, MAIN_OPAQUE_PASS, START_MAIN_PASS},
-            },
-            AlphaMask3d, Camera3d, Camera3dBundle, Opaque3d, ScreenSpaceTransmissionQuality,
-            Transmissive3d, Transparent3d, CORE_3D,
-        },
-        prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass, NormalPrepass},
-        tonemapping::{DebandDither, Tonemapping},
+        core_3d::{graph::node::MAIN_OPAQUE_PASS, Camera3d, CORE_3D},
+        prepass::{DepthPrepass, NormalPrepass},
+        tonemapping::Tonemapping,
     },
     ecs::{
-        bundle::Bundle,
-        component::Component,
         entity::Entity,
         event::EventReader,
-        query::{Has, QueryItem, QueryState, ROQueryItem, With},
-        schedule::{IntoSystemConfigs, NextState, OnEnter, State, States},
+        query::{Has, QueryItem, ROQueryItem, With},
+        schedule::IntoSystemConfigs,
         system::{
-            lifetimeless::{Read, SQuery, SRes},
-            Commands, Local, Query, ReadOnlySystemParam, Res, ResMut, Resource, RunSystemOnce,
-            SystemParamItem, SystemState,
+            lifetimeless::SRes, Commands, Local, Query, Res, ResMut, Resource, SystemParamItem,
         },
-        world::{FromWorld, World},
+        world::FromWorld,
     },
-    math::{UVec2, UVec3, Vec2, Vec3},
+    math::{UVec2, Vec3},
     pbr::{
-        AlphaMode, DrawMesh, EnvironmentMapLight, Material, MaterialBindGroupId,
-        MaterialMeshBundle, MaterialProperties, Mesh3d, MeshFlags, MeshPipeline,
-        MeshPipelineKey, MeshPipelineViewLayoutKey, MeshTransforms, MeshUniform,
-        OpaqueRendererMethod, PreparedMaterial, PrepassPipelinePlugin, RenderMaterialInstances,
-        RenderMaterials, RenderMeshInstance, RenderMeshInstances,
-        ScreenSpaceAmbientOcclusionSettings, SetMaterialBindGroup, SetMeshBindGroup,
-        SetMeshViewBindGroup, ShadowFilteringMethod,
+        DrawMesh, Material, MaterialProperties, MeshPipeline, MeshPipelineKey,
+        OpaqueRendererMethod, PreparedMaterial, RenderMaterialInstances, RenderMaterials,
+        RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup, SetMeshViewBindGroup,
     },
-    reflect::Reflect,
     render::{
-        batching::{
-            batch_and_prepare_render_phase, write_batched_instance_buffer, GetBatchData,
-        },
-        camera::{
-            Camera, CameraRenderGraph, ExtractedCamera, OrthographicProjection,
-            PerspectiveProjection, Projection, RenderTarget, ScalingMode, TemporalJitter,
-        },
+        batching::batch_and_prepare_render_phase,
+        camera::{Camera, ExtractedCamera, Projection, TemporalJitter},
         color::Color,
-        extract_component::{ComponentUniforms, ExtractComponent, ExtractComponentPlugin},
         extract_instances::ExtractInstancesPlugin,
-        extract_resource::{ExtractResource, ExtractResourcePlugin},
-        main_graph::node::CAMERA_DRIVER,
-        mesh::{
-            shape::{Cube, UVSphere},
-            GpuBufferInfo, Mesh, MeshVertexBufferLayout,
-        },
-        primitives::{Frustum, Sphere},
+        mesh::{Mesh, MeshVertexBufferLayout},
         render_asset::{prepare_assets, RenderAssets},
         render_graph::{
-            NodeRunError, RenderGraph, RenderGraphApp, RenderGraphContext, SlotInfo, SlotType,
-            ViewNode, ViewNodeRunner,
+            NodeRunError, RenderGraphApp, RenderGraphContext, ViewNode, ViewNodeRunner,
         },
         render_phase::{
-            sort_phase_system, AddRenderCommand, CachedRenderPipelinePhaseItem, Draw,
-            DrawFunctionId, DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult,
-            RenderPhase, SetItemPipeline, TrackedRenderPass,
+            sort_phase_system, AddRenderCommand, CachedRenderPipelinePhaseItem, DrawFunctionId,
+            DrawFunctions, PhaseItem, RenderCommand, RenderCommandResult, RenderPhase,
+            SetItemPipeline, TrackedRenderPass,
         },
         render_resource::{
-            AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntries, BindGroupEntry,
-            BindGroupLayout, BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
-            BindingType::{self, StorageTexture},
-            BufferBindingType, BufferSize, CachedRenderPipelineId, ColorTargetState,
-            ColorWrites, Extent3d, Face, LoadOp, Operations, PipelineCache, PrimitiveTopology,
-            RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
-            Shader, ShaderDefVal, ShaderSize, ShaderStages, ShaderType,
-            SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
-            StorageTextureAccess, Texture, TextureAspect, TextureDescriptor, TextureDimension,
-            TextureFormat, TextureSampleType, TextureUsages, TextureView,
+            AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntry, BindGroupLayout,
+            BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
+            BindingType::{self},
+            BufferBindingType, BufferSize, CachedRenderPipelineId, ColorTargetState, ColorWrites,
+            Extent3d, Face, LoadOp, Operations, PipelineCache, RenderPassDepthStencilAttachment,
+            RenderPassDescriptor, RenderPipelineDescriptor, Shader, ShaderDefVal, ShaderSize,
+            ShaderStages, ShaderType, SpecializedMeshPipeline, SpecializedMeshPipelineError,
+            SpecializedMeshPipelines, StorageTextureAccess, Texture, TextureDescriptor,
+            TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
             TextureViewDescriptor, TextureViewDimension, UniformBuffer,
         },
         renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::{FallbackImage, Image},
-        view::{
-            ExtractedView, InheritedVisibility, Msaa, NoFrustumCulling, ViewDepthTexture,
-            ViewTarget, ViewVisibility, Visibility, VisibleEntities,
-        },
+        view::{ExtractedView, Msaa, ViewDepthTexture, ViewTarget, VisibleEntities},
         Extract, ExtractSchedule, Render, RenderApp, RenderSet,
     },
-    transform::components::{GlobalTransform, Transform},
+    transform::components::GlobalTransform,
     utils::{nonmax::NonMaxU32, FloatOrd, HashSet},
     window::Window,
 };
 
-use crate::{
-    chunk::ChunkMaterial,
-    player::{PlayerEntity, PlayerPlugin},
-};
+use crate::{chunk::ChunkMaterial, player::PlayerEntity};
 
 pub struct RenderPlugin;
 
@@ -157,10 +118,8 @@ struct WorldData {
 }
 impl WorldData {
     fn new_default(render_device: &RenderDevice, render_queue: &RenderQueue) -> Self {
-        let render_pass_bind_group_layout =
-            WorldData::render_pass_bind_group_layout(render_device);
-        let depth_pass_bind_group_layout =
-            WorldData::depth_pass_bind_group_layout(render_device);
+        let render_pass_bind_group_layout = WorldData::render_pass_bind_group_layout(render_device);
+        let depth_pass_bind_group_layout = WorldData::depth_pass_bind_group_layout(render_device);
         let transient_world_texture =
             Self::transient_world_texture(render_device, Default::default());
         let transient_world_view =
@@ -237,11 +196,11 @@ impl WorldData {
                 render_device,
                 Extent3d {
                     width: uniforms.screen_resolution.x / uniforms.depth_prepass_scale_factor
-                        + (uniforms.screen_resolution.x % uniforms.depth_prepass_scale_factor
-                            > 0) as u32,
+                        + (uniforms.screen_resolution.x % uniforms.depth_prepass_scale_factor > 0)
+                            as u32,
                     height: uniforms.screen_resolution.y / uniforms.depth_prepass_scale_factor
-                        + (uniforms.screen_resolution.y % uniforms.depth_prepass_scale_factor
-                            > 0) as u32,
+                        + (uniforms.screen_resolution.y % uniforms.depth_prepass_scale_factor > 0)
+                            as u32,
                     depth_or_array_layers: 1,
                 },
             );
@@ -334,9 +293,7 @@ impl WorldData {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(
-                            WorldDataUniforms::SHADER_SIZE.into(),
-                        ),
+                        min_binding_size: BufferSize::new(WorldDataUniforms::SHADER_SIZE.into()),
                     },
                     count: None,
                 },
@@ -373,9 +330,7 @@ impl WorldData {
                     ty: BindingType::Buffer {
                         ty: BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: BufferSize::new(
-                            WorldDataUniforms::SHADER_SIZE.into(),
-                        ),
+                        min_binding_size: BufferSize::new(WorldDataUniforms::SHADER_SIZE.into()),
                     },
                     count: None,
                 },
@@ -440,12 +395,7 @@ struct WorldDataUniforms {
     depth_prepass_scale_factor: u32,
 }
 impl WorldDataUniforms {
-    fn new(
-        player_pos: Vec3,
-        resolution: UVec2,
-        fov: f32,
-        depth_prepass_scale_factor: u32,
-    ) -> Self {
+    fn new(player_pos: Vec3, resolution: UVec2, fov: f32, depth_prepass_scale_factor: u32) -> Self {
         let theta = fov as f64;
         let t = (resolution.x as f64 / depth_prepass_scale_factor as f64)
             * (1.0 / (theta / 2.0).tan())
@@ -569,34 +519,33 @@ impl ViewNode for VoxelRenderNode {
         let world_data = world.resource::<WorldData>();
 
         {
-            let mut render_pass =
-                render_context.begin_tracked_render_pass(RenderPassDescriptor {
-                    label: Some("chunk_depth_prepass"),
-                    // color_attachments: &[Some(target.get_color_attachment(Operations {
-                    //     load: LoadOp::Load,
-                    //     store: true,
-                    // }))],
-                    color_attachments: &[Some(
-                        bevy::render::render_resource::RenderPassColorAttachment {
-                            view: &world_data.depth_prepass_texture_view,
-                            resolve_target: None,
-                            ops: Operations {
-                                load: LoadOp::Clear(Color::rgb_u8(0, 0, 0).into()),
-                                store: true,
-                            },
-                        },
-                    )],
-                    // depth_stencil_attachment: None,
-                    depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                        view: &world_data.depth_prepass_depth_stencil_view,
-                        depth_ops: Some(Operations {
-                            // load: LoadOp::Load,
-                            load: LoadOp::Clear(Default::default()),
+            let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
+                label: Some("chunk_depth_prepass"),
+                // color_attachments: &[Some(target.get_color_attachment(Operations {
+                //     load: LoadOp::Load,
+                //     store: true,
+                // }))],
+                color_attachments: &[Some(
+                    bevy::render::render_resource::RenderPassColorAttachment {
+                        view: &world_data.depth_prepass_texture_view,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color::rgb_u8(0, 0, 0).into()),
                             store: true,
-                        }),
-                        stencil_ops: None,
+                        },
+                    },
+                )],
+                // depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &world_data.depth_prepass_depth_stencil_view,
+                    depth_ops: Some(Operations {
+                        // load: LoadOp::Load,
+                        load: LoadOp::Clear(Default::default()),
+                        store: true,
                     }),
-                });
+                    stencil_ops: None,
+                }),
+            });
 
             if let Some(viewport) = cam.viewport.as_ref() {
                 render_pass.set_camera_viewport(viewport);
@@ -607,23 +556,22 @@ impl ViewNode for VoxelRenderNode {
         }
 
         {
-            let mut render_pass =
-                render_context.begin_tracked_render_pass(RenderPassDescriptor {
-                    label: Some("chunk_render_pass"),
-                    color_attachments: &[Some(target.get_color_attachment(Operations {
+            let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
+                label: Some("chunk_render_pass"),
+                color_attachments: &[Some(target.get_color_attachment(Operations {
+                    load: LoadOp::Load,
+                    store: true,
+                }))],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &bevy_depth_view.view,
+                    depth_ops: Some(Operations {
+                        // load: cam3d.depth_load_op.clone().into(),
                         load: LoadOp::Load,
                         store: true,
-                    }))],
-                    depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                        view: &bevy_depth_view.view,
-                        depth_ops: Some(Operations {
-                            // load: cam3d.depth_load_op.clone().into(),
-                            load: LoadOp::Load,
-                            store: true,
-                        }),
-                        stencil_ops: None,
                     }),
-                });
+                    stencil_ops: None,
+                }),
+            });
 
             if let Some(viewport) = cam.viewport.as_ref() {
                 render_pass.set_camera_viewport(viewport);
@@ -869,12 +817,8 @@ pub fn queue_material_meshes<M: Material>(
                 mesh_key |= MeshPipelineKey::MORPH_TARGETS;
             }
 
-            let render_pipeline_id = pipelines.specialize(
-                &pipeline_cache,
-                &material_pipeline,
-                mesh_key,
-                &mesh.layout,
-            );
+            let render_pipeline_id =
+                pipelines.specialize(&pipeline_cache, &material_pipeline, mesh_key, &mesh.layout);
             let render_pipeline_id = match render_pipeline_id {
                 Ok(id) => id,
                 Err(err) => {

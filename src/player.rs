@@ -1,4 +1,10 @@
-use super::*;
+use bevy::{
+    input::mouse::MouseMotion,
+    prelude::*,
+    window::{CursorGrabMode, PrimaryWindow},
+};
+
+use crate::ControlsState;
 
 #[derive(Component)]
 pub struct PlayerEntity;
@@ -118,7 +124,7 @@ fn update(
     transform.translation += translation;
 }
 
-mod spectator {
+pub mod spectator {
     use super::*;
 
     #[derive(Component)]

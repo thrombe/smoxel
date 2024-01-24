@@ -1,14 +1,10 @@
 use bevy::{
     asset::{AssetLoader, AsyncReadExt},
     prelude::*,
-    utils::HashMap,
 };
 use dot_vox::{DotVoxData, Model, SceneNode};
 
-use crate::chunk::{
-    ByteChunk, ChunkHandle, ChunkMaterial, ChunkOctree, ChunkTrait, L1ChunkOctree,
-    L2ChunkOctree, TiledChunker, DEFAULT_CHUNK_SIDE,
-};
+use crate::chunk::{ChunkHandle, ChunkMaterial, ChunkOctree, TiledChunker};
 
 #[derive(Component, Clone, Copy)]
 pub struct VoxChunk;
