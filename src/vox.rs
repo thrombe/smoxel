@@ -241,7 +241,7 @@ impl VoxParser<'_> {
     /// chunk_size in log2
     fn svo(
         &self,
-        chunk_size: u32,
+        chunk_height: u32,
         entity: Entity,
         images: &mut Assets<Image>,
         meshes: &mut Assets<Mesh>,
@@ -250,8 +250,8 @@ impl VoxParser<'_> {
         let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
 
         let mut svo = ChunkOctree::new(
-            chunk_size + 5,
-            chunk_size,
+            chunk_height + 5,
+            chunk_height,
             cube_handle,
             material_handle,
             entity,
