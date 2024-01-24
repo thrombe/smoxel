@@ -4,8 +4,6 @@ use bevy::{
     window::{CursorGrabMode, PrimaryWindow},
 };
 
-use crate::ControlsState;
-
 #[derive(Component)]
 pub struct PlayerEntity;
 
@@ -124,6 +122,13 @@ fn update(
     transform.translation += translation;
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default, States)]
+enum ControlsState {
+    #[default]
+    Player,
+    Spectator,
+}
+
 pub mod spectator {
     use super::*;
 
@@ -133,7 +138,8 @@ pub mod spectator {
     pub struct Spectator;
     impl Plugin for Spectator {
         fn build(&self, app: &mut App) {
-            app.add_systems(Startup, setup)
+            app.add_state::<ControlsState>()
+                .add_systems(Startup, setup)
                 .add_systems(Update, switch_mode)
                 .add_systems(Update, update.run_if(in_state(ControlsState::Spectator)));
         }

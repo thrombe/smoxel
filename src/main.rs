@@ -17,6 +17,11 @@ use bevy_inspector_egui::{
     quick::WorldInspectorPlugin,
 };
 
+mod render;
+mod chunk;
+mod vox;
+mod player;
+
 fn main() {
     let mut app = App::new();
 
@@ -61,7 +66,6 @@ fn main() {
         // },
     ))
     .add_state::<AppState>()
-    .add_state::<ControlsState>()
     .add_plugins((
         // DiagnosticsPlugin,
         FrameTimeDiagnosticsPlugin,
@@ -124,20 +128,6 @@ enum AppState {
     Loading,
     Playing,
 }
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default, States)]
-enum ControlsState {
-    #[default]
-    Player,
-    Spectator,
-}
-
-mod render;
-
-mod chunk;
-
-mod vox;
-
-mod player;
 
 fn lerp(i: Vec3, f: Vec3, s: f32, dt: f32) -> Vec3 {
     let s = (1.0 - s).powf(dt * 120.0);
