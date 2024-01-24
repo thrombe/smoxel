@@ -1,6 +1,5 @@
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    input::mouse::MouseMotion,
     pbr::{wireframe::WireframePlugin, PbrPlugin},
     prelude::*,
     reflect::TypePath,
@@ -8,7 +7,6 @@ use bevy::{
         render_resource::{AsBindGroup, ShaderRef},
         RenderPlugin,
     },
-    window::{CursorGrabMode, PrimaryWindow},
 };
 
 #[cfg(feature = "dev")]
@@ -17,10 +15,10 @@ use bevy_inspector_egui::{
     quick::WorldInspectorPlugin,
 };
 
-mod render;
 mod chunk;
-mod vox;
 mod player;
+mod render;
+mod vox;
 
 fn main() {
     let mut app = App::new();
