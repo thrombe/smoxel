@@ -1534,7 +1534,7 @@ mod chunk {
     pub struct ChunkOctree {
         root: ChunkOctreeNode,
         height: u32,     // 2.pow(height) number of voxels on edges
-        chunk_size: u32, // in log2 (-size, size)
+        chunk_height: u32, // in log2 (-size, size)
 
         voxel_physical_size: f32,
         cube_handle: Handle<Mesh>,
@@ -1544,18 +1544,17 @@ mod chunk {
     impl ChunkOctree {
         pub fn new(
             height: u32,
-            chunk_size: u32,
+            chunk_height: u32,
             cube_handle: Handle<Mesh>,
             materials: Handle<Image>,
             entity: Entity,
         ) -> Self {
             let voxel_physical_size = 1.0/16.0;
-            // let voxel_physical_size = 1.0;
             Self {
                 entity,
                 height,
-                chunk_size,
-                root: ChunkOctreeNode::new_node(chunk_size),
+                chunk_height,
+                root: ChunkOctreeNode::new_node(chunk_height),
                 voxel_physical_size,
                 cube_handle,
                 materials,
@@ -1567,12 +1566,12 @@ mod chunk {
             }
             Some(
                 self.root
-                    .set_voxel(pos, voxel, self.height, self.chunk_size),
+                    .set_voxel(pos, voxel, self.height, self.chunk_height),
             )
         }
 
         pub fn update_mip(&mut self) {
-            self.root.update_mip(self.chunk_size);
+            self.root.update_mip(self.chunk_height);
         }
         pub fn spawn_chunks(
             &mut self,
@@ -1607,7 +1606,7 @@ mod chunk {
                 despawn_radius,
                 chunk_pos,
                 self.height,
-                self.chunk_size,
+                self.chunk_height,
                 self.entity,
                 commands,
                 images,
@@ -1629,8 +1628,8 @@ mod chunk {
         },
     }
     impl ChunkOctreeNode {
-        fn new_node(chunk_size: u32) -> Self {
-            let byte = ByteChunk::new_with_size(2usize.pow(chunk_size));
+        fn new_node(chunk_height: u32) -> Self {
+            let byte = ByteChunk::new_with_size(2usize.pow(chunk_height));
             let mip1 = byte.mip();
             let mip2 = mip1.mip();
             let mip = Chunk {
@@ -1644,8 +1643,8 @@ mod chunk {
                 mip,
             }
         }
-        fn new_leaf(chunk_size: u32) -> Self {
-            let byte = ByteChunk::new_with_size(2usize.pow(chunk_size));
+        fn new_leaf(chunk_height: u32) -> Self {
+            let byte = ByteChunk::new_with_size(2usize.pow(chunk_height));
             let mip1 = byte.mip();
             let mip2 = mip1.mip();
             let chunk = Chunk {
@@ -1693,7 +1692,7 @@ mod chunk {
             despawn_radius: f32,
             chunk_pos: IVec3,
             height: u32,
-            chunk_size: u32,
+            chunk_height: u32,
 
             svo_entity: Entity,
             commands: &mut Commands,
@@ -1733,7 +1732,7 @@ mod chunk {
                                         commands,
                                         images,
                                         chunk_materials,
-                                        voxel_physical_size * 2i32.pow(height - chunk_size) as f32,
+                                        voxel_physical_size * 2i32.pow(height - chunk_height) as f32,
                                         materials,
                                         cube_mesh,
                                         chunk_pos.as_vec3() * voxel_physical_size,
@@ -1745,7 +1744,7 @@ mod chunk {
                                     despawn_radius,
                                     pos,
                                     height - 1,
-                                    chunk_size,
+                                    chunk_height,
                                     svo_entity,
                                     commands,
                                     images,
@@ -1762,15 +1761,15 @@ mod chunk {
         }
 
         // TODO: very inefficient
-        fn update_mip(&mut self, chunk_size: u32) {
+        fn update_mip(&mut self, chunk_height: u32) {
             match self {
                 Self::Chunk { .. } => (),
                 Self::Node { chunks, mip } => {
                     chunks
                         .iter_mut()
                         .flatten()
-                        .for_each(|c| c.update_mip(chunk_size));
-                    let size = 2usize.pow(chunk_size);
+                        .for_each(|c| c.update_mip(chunk_height));
+                    let size = 2usize.pow(chunk_height);
                     let mut byte = ByteChunk::new_with_size(2 * size);
 
                     // let size = size / 2;
@@ -1815,10 +1814,10 @@ mod chunk {
         }
 
         // does not update the mips
-        fn set_voxel(&mut self, pos: IVec3, voxel: u8, height: u32, chunk_size: u32) -> u8 {
+        fn set_voxel(&mut self, pos: IVec3, voxel: u8, height: u32, chunk_height: u32) -> u8 {
             match self {
                 Self::Node { chunks, .. } => {
-                    assert!(height > chunk_size);
+                    assert!(height > chunk_height);
                     let mut index = 0;
                     let mut offset = IVec3::ONE * 2i32.pow(height - 2);
                     if pos.z >= 0 {
@@ -1839,18 +1838,18 @@ mod chunk {
                     // dbg!(pos, offset, pos-offset);
                     chunks[index]
                         .get_or_insert_with(|| {
-                            if height - 1 == chunk_size {
-                                Self::new_leaf(chunk_size)
+                            if height - 1 == chunk_height {
+                                Self::new_leaf(chunk_height)
                             } else {
-                                Self::new_node(chunk_size)
+                                Self::new_node(chunk_height)
                             }
                         })
-                        .set_voxel(pos - offset, voxel, height - 1, chunk_size)
+                        .set_voxel(pos - offset, voxel, height - 1, chunk_height)
                 }
                 Self::Chunk { voxels } => {
-                    assert_eq!(height, chunk_size);
-                    let offset = IVec3::ONE * 2i32.pow(chunk_size - 1);
-                    // dbg!(pos, 2i32.pow(chunk_size - 1), pos + offset);
+                    assert_eq!(height, chunk_height);
+                    let offset = IVec3::ONE * 2i32.pow(chunk_height - 1);
+                    // dbg!(pos, 2i32.pow(chunk_height - 1), pos + offset);
                     let pos = pos + offset;
                     let pos = pos.try_into().unwrap();
                     voxels.byte.set(pos, voxel).unwrap()
@@ -3027,60 +3026,6 @@ mod vox {
         let mut svo = parser.svo(7, vox_scene_entity, images, meshes);
         svo.spawn_chunks(commands, images, chunk_materials);
         commands.entity(vox_scene_entity).insert(svo);
-
-        // let side = DEFAULT_CHUNK_SIDE as usize;
-        // // let side = 256;
-        // let size = 16.0;
-        // let tc = parser.tiled_chunker(side);
-        // let material_handle = images.add(ChunkHandle::material_image(parser.get_materials()));
-        // let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
-        // for (chunk_index, chunk) in tc.chunks.into_iter() {
-        //     let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
-        //     let chunk_pos = chunk_pos * size * 2.0;
-
-        //     let side = chunk.side;
-
-        //     let mip1 = chunk.mip();
-        //     let mip2 = mip1.mip();
-        //     let voxels_handle = images.add(chunk.to_image());
-        //     let mip1_handle = images.add(mip1.into_image());
-        //     let mip2_handle = images.add(mip2.into_image());
-        //     let chunk = ChunkHandle {
-        //         voxels: voxels_handle.clone(),
-        //         materials: material_handle.clone(),
-        //         side,
-        //     };
-
-        //     let chunk_material = chunk_materials.add(ChunkMaterial {
-        //         side: side as _,
-        //         voxels: voxels_handle.clone(),
-        //         materials: material_handle.clone(),
-        //         chunk_position: chunk_pos,
-        //         chunk_size: size,
-        //         voxels_mip1: mip1_handle,
-        //         voxels_mip2: mip2_handle,
-        //     });
-
-        //     commands.entity(vox_scene_entity).with_children(|builder| {
-        //         builder.spawn((
-        //             Name::new("VoxChunk"),
-        //             VoxChunk,
-        //             MaterialMeshBundle {
-        //                 mesh: cube_handle.clone(),
-        //                 // material: std_materials.add(StandardMaterial {
-        //                 //     base_color: Color::rgb(0.8, 0.8, 0.8),
-        //                 //     alpha_mode: AlphaMode::Opaque,
-        //                 //     ..Default::default()
-        //                 // }),
-        //                 material: chunk_material,
-        //                 transform: Transform::from_translation(chunk_pos)
-        //                     .with_scale(Vec3::NEG_ONE * size),
-        //                 ..Default::default()
-        //             },
-        //             chunk,
-        //         ));
-        //     });
-        // }
     }
 }
 
