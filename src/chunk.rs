@@ -30,7 +30,7 @@ impl Plugin for VoxelPlugin {
                 || {},
                 // spawn_chunk_tasks,
                 // resolve_chunk_tasks,
-                // test_dynamic_mip,
+                test_dynamic_mip,
             ),
         );
     }
@@ -140,7 +140,6 @@ fn test_dynamic_mip(
     for (mut svo, pos) in svo.iter_mut() {
         svo.update_chunks(
             player.translation(),
-            500.0,
             IVec3::ZERO,
             &mut commands,
             &mut images,
@@ -224,16 +223,15 @@ impl ChunkOctree {
     fn update_chunks(
         &mut self,
         player: Vec3,
-        despawn_radius: f32,
         chunk_pos: IVec3,
 
         commands: &mut Commands,
         images: &mut Assets<Image>,
         chunk_materials: &mut Assets<ChunkMaterial>,
     ) {
+        self.root.set_mip_visibility(commands, Visibility::Hidden);
         self.root.update_chunks(
             player,
-            despawn_radius,
             chunk_pos,
             self.height,
             self.chunk_height,
@@ -297,7 +295,7 @@ impl ChunkOctreeNode {
             Self::Chunk { voxels } => voxels,
         }
     }
-    fn despawn(&mut self, commands: &mut Commands) {
+    fn despawn_rec(&mut self, commands: &mut Commands) {
         match self {
             Self::Node { chunks, mip } => {
                 if let Some(e) = mip.entity.take() {
@@ -306,11 +304,26 @@ impl ChunkOctreeNode {
                     chunks
                         .iter_mut()
                         .flatten()
-                        .for_each(|c| c.despawn(commands));
+                        .for_each(|c| c.despawn_rec(commands));
                 }
             }
             Self::Chunk { voxels } => {
                 let _ = voxels.entity.take().map(|e| commands.entity(e).despawn());
+            }
+        }
+    }
+    fn set_mip_visibility(&mut self, commands: &mut Commands, vis: Visibility) {
+        match self {
+            Self::Node { chunks, mip } => {
+                if let Some(e) = mip.entity.as_ref() {
+                    commands.entity(*e).insert(vis);
+                }
+            }
+            Self::Chunk { voxels } => {
+                let _ = voxels
+                    .entity
+                    .as_ref()
+                    .map(|e| commands.entity(*e).insert(vis).id());
             }
         }
     }
@@ -319,7 +332,6 @@ impl ChunkOctreeNode {
     fn update_chunks(
         &mut self,
         player: Vec3,
-        despawn_radius: f32,
         chunk_pos: IVec3,
         height: u32,
         chunk_height: u32,
@@ -335,12 +347,57 @@ impl ChunkOctreeNode {
         let size = 2i32.pow(height - 2);
         match self {
             Self::Node { chunks, mip } => {
+                if mip.entity.is_none() {
+                    mip.spawn(
+                        svo_entity,
+                        commands,
+                        images,
+                        chunk_materials,
+                        voxel_physical_size * 2i32.pow(height - chunk_height) as f32,
+                        materials,
+                        cube_mesh,
+                        chunk_pos.as_vec3() * voxel_physical_size,
+                    );
+                }
+                let mut ipos = chunk_pos;
+                let pos = ipos.as_vec3() * voxel_physical_size;
+                let dir = (pos - player).normalize() * voxel_physical_size;
+                let close = pos - size as f32 * 2.0 * dir;
+                let far = pos + size as f32 * 2.0 * dir;
+                let close_dist = (close - player).length().abs();
+                let far_dist = (far - player).length().abs();
+                let center_dist = (pos - player).length().abs();
+                let dist = center_dist.min(close_dist);
+
+                let r = 128.0;
+                let mult = 2u32.pow(height - chunk_height + 1) as f32;
+                let mut despawn_radius = r * 6.0 * mult;
+                let mut spawn_radius = r * 2.0 * mult;
+                despawn_radius *= voxel_physical_size;
+                spawn_radius *= voxel_physical_size;
+
+                let mut recurse = true;
+                let mut spawn = false;
+                let mut despawn = false;
+
+                match (
+                    dist < spawn_radius,
+                ) {
+                    (true,) => {
+                        spawn = true;
+                    }
+                    (false,) => {
+                        recurse = false;
+                        despawn = true;
+                    }
+                }
+
                 chunks
                     .iter_mut()
                     .enumerate()
                     .filter_map(|(i, c)| c.as_mut().map(|c| (i, c)))
                     .for_each(|(i, c)| {
-                        let pos = chunk_pos;
+                        let mut ipos = chunk_pos;
                         let mut offset = IVec3::ONE * size;
                         if i & 0b001 == 0 {
                             offset.x *= -1;
@@ -351,32 +408,54 @@ impl ChunkOctreeNode {
                         if i & 0b100 == 0 {
                             offset.z *= -1;
                         }
+                        ipos += offset;
 
-                        let pos = pos + offset;
+                        let pos = ipos.as_vec3() * voxel_physical_size;
+                        let dir = (pos - player).normalize() * voxel_physical_size;
+                        let close = pos - size as f32 * dir;
+                        let far = pos + size as f32 * dir;
+                        let close_dist = (close - player).length().abs();
+                        let far_dist = (far - player).length().abs();
+                        let center_dist = (pos - player).length().abs();
+                        let dist = center_dist.min(close_dist);
 
-                        if (pos.as_vec3() * voxel_physical_size - player)
-                            .length()
-                            .abs()
-                            > despawn_radius
-                        {
-                            c.despawn(commands);
-                            if mip.entity.is_none() {
-                                mip.spawn(
-                                    svo_entity,
-                                    commands,
-                                    images,
-                                    chunk_materials,
-                                    voxel_physical_size * 2i32.pow(height - chunk_height) as f32,
-                                    materials,
-                                    cube_mesh,
-                                    chunk_pos.as_vec3() * voxel_physical_size,
-                                );
+                        let r = 128.0;
+                        let mult = 2u32.pow(height - chunk_height) as f32;
+                        let mut despawn_radius = r * 6.0 * mult;
+                        let mut spawn_radius = r * 2.0 * mult;
+                        despawn_radius *= voxel_physical_size;
+                        spawn_radius *= voxel_physical_size;
+
+                        let mut recurse = recurse;
+                        let mut spawn = spawn;
+                        let mut despawn = despawn;
+
+                        match (
+                            dist < spawn_radius,
+                            height == chunk_height + 1,
+                        ) {
+                            (_, true) => {
                             }
-                        } else {
+                            (true, false) => {
+                                spawn = false;
+                                despawn = true;
+                                recurse = true;
+                            }
+                            (false, false) => {
+                                // recurse = false;
+                            }
+                        }
+
+                        if spawn {
+                            c.set_mip_visibility(commands, Visibility::Inherited);
+                        }
+                        if despawn {
+                            c.set_mip_visibility(commands, Visibility::Hidden);
+                        }
+                        if recurse {
                             c.update_chunks(
                                 player,
-                                despawn_radius,
-                                pos,
+                                ipos,
                                 height - 1,
                                 chunk_height,
                                 svo_entity,
