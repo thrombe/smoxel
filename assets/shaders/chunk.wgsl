@@ -297,14 +297,11 @@ fn mip5_loop_final(_oo: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: v
     // march = max(min(march, max_bound), min_bound)
     marchi = max(vec3(0), marchi);
     marchi = min(vec3(i32(side - 1u)/32), marchi);
-    o = max(vec3<f32>(0.0), o);
-    o = min(vec3<f32>(f32(side / 32u)), o);
 
     // how much t untill we hit a plane along this axis
     var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < i32(side)/32 * 3 - 2; i += 1) {
-        // TODO: figure out why this should not be '>='
         if any(marchi >= i32(side)/32 || marchi < 0) {
             break;
         }
@@ -334,14 +331,11 @@ fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     var marchi = vec3<i32>(o);
     marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
+    var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var mod32 = marchi % 2;
     marchi -= mod32;
-    o -= vec3<f32>(min_bound);
-    o = min(vec3(2.0) - 0.00001, o);
-    o = max(vec3(0.0) + 0.00001, o);
 
 
-    var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
         if (any(mod32 >= 2 || mod32 < 0)) {
@@ -371,17 +365,13 @@ fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     res.color = vec4(0.0);
 
     var o = _o + ray_dir * _last_t;
-
     var marchi = vec3<i32>(floor(o) + 0.5);
     marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
+    var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var mod16 = marchi % 2;
     marchi -= mod16;
-    o -= vec3<f32>(min_bound);
-    o = min(vec3(2.0) - 0.00001, o);
-    o = max(vec3(0.0) + 0.00001, o);
 
-    var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
         if any(mod16 >= 2 || mod16 < 0) {
@@ -412,15 +402,11 @@ fn mip2_loop_final(_oo: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: v
 
     let _o = _oo / 4.0;
     var o = _o;
-    // current voxel position (offset to center of the voxel)
     var marchi = vec3<i32>(o);
     marchi = min(vec3(i32(side - 1u)/4), marchi);
     marchi = max(vec3(0), marchi);
-    o = max(vec3<f32>(0.0), o);
-    o = min(vec3<f32>(f32(side / 4u)), o);
-
-    // how much t untill we hit a plane along this axis
     var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
+
     var last_t = 0.0;
     for (var i = 0u; i < (side / 4u) * 3u - 2u; i += 1u) {
         if any(marchi >= i32(side)/4 || marchi < 0) {
@@ -460,14 +446,10 @@ fn mip2_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     var marchi = vec3<i32>(floor(o) + 0.5);
     marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
-
+    var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var mod8 = marchi % 2;
     marchi -= mod8;
-    o -= vec3<f32>(min_bound);
-    o = min(vec3(2.0) - 0.00001, o);
-    o = max(vec3(0.0) + 0.00001, o);
 
-    var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
         if (any(mod8 >= 2 || mod8 < 0)) {
@@ -506,14 +488,10 @@ fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     var marchi = vec3<i32>(floor(o) + 0.5);
     marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
-
+    var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var mod4 = marchi % 2;
     marchi -= mod4;
-    o -= vec3<f32>(min_bound);
-    o = min(vec3(2.0) - 0.00001, o);
-    o = max(vec3(0.0) + 0.00001, o);
 
-    var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
         if (any(mod4 >= 2 || mod4 < 0)) {
@@ -554,15 +532,10 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
     var marchi = vec3<i32>(o);
     marchi = min(min_bound + 1, marchi);
     marchi = max(min_bound, marchi);
-    o -= vec3<f32>(min_bound);
-    o = min(vec3(2.0) - 0.00001, o);
-    o = max(vec3(0.0) + 0.00001, o);
-    o += vec3<f32>(min_bound);
-
+    var t = (step * (0.5 - (o - vec3<f32>(marchi))) + 0.5) * dt;
     var mod2 = marchi % 2;
     marchi -= mod2;
 
-    var t = (step * (0.5 - fract(o)) + 0.5) * dt;
     var last_t = 0.0;
     for (var i = 0; i < 4; i += 1) {
         if any(mod2 >= 2 || mod2 < 0) {
