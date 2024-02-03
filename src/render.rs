@@ -63,7 +63,7 @@ use bevy::{
             SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
             StorageTextureAccess, Texture, TextureAspect, TextureDescriptor, TextureDimension,
             TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
-            TextureViewDimension, UniformBuffer, ComputePipeline, ComputePipelineId, ComputePipelineDescriptor, CachedComputePipelineId, ComputePassDescriptor,
+            TextureViewDimension, UniformBuffer, ComputePipeline, ComputePipelineId, ComputePipelineDescriptor, CachedComputePipelineId, ComputePassDescriptor, RenderPassColorAttachment,
         },
         renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::{FallbackImage, Image},
@@ -613,7 +613,7 @@ impl ViewNode for VoxelRenderNode {
                 //     store: true,
                 // }))],
                 color_attachments: &[Some(
-                    bevy::render::render_resource::RenderPassColorAttachment {
+                    RenderPassColorAttachment {
                         view: &world_data.depth_prepass_texture_view,
                         resolve_target: None,
                         ops: Operations {
@@ -849,23 +849,23 @@ impl ViewNode for VoxelizationRenderNode {
             let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
                 label: Some("voxelization_render_pass"),
                 color_attachments: &[
-                    // Some(bevy::render::render_resource::RenderPassColorAttachment {
-                    //     // view: &world_data.voxelizer_camera_target_view,
-                    //     resolve_target: None,
-                    //     ops: Operations {
-                    //         load: LoadOp::Clear(Color::rgb_u8(0, 0, 0).into()),
-                    //         store: true,
-                    //     },
-                    // }),
-                    Some(view.get_color_attachment(Operations {
-                        load: LoadOp::Load,
-                        store: true,
-                    })),
+                    Some(RenderPassColorAttachment {
+                        view: &world_data.voxelizer_camera_target_view,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color::rgb_u8(0, 0, 0).into()),
+                            store: true,
+                        },
+                    }),
+                    // Some(view.get_color_attachment(Operations {
+                    //     load: LoadOp::Load,
+                    //     store: true,
+                    // })),
                 ],
                 // depth_stencil_attachment: None,
                 depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                    // view: &world_data.voxelizer_camera_depth_stencil_view,
-                    view: &view_depth.view,
+                    view: &world_data.voxelizer_camera_depth_stencil_view,
+                    // view: &view_depth.view,
                     depth_ops: Some(Operations {
                         // load: LoadOp::Load,
                         load: LoadOp::Clear(Default::default()),
@@ -1745,11 +1745,11 @@ impl SpecializedMeshPipeline for VoxelizationPipeline {
         frag.shader = self.chunk_fragment_shader.clone();
         frag.shader_defs
             .push(ShaderDefVal::Bool("VOXELIZATION".into(), true));
-        // frag.targets[0] = Some(ColorTargetState {
-        //     format: TextureFormat::R8Unorm,
-        //     blend: None,
-        //     write_mask: ColorWrites::RED,
-        // });
+        frag.targets[0] = Some(ColorTargetState {
+            format: TextureFormat::R8Unorm,
+            blend: None,
+            write_mask: ColorWrites::RED,
+        });
         Ok(desc)
     }
 }
