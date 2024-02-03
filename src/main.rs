@@ -67,6 +67,7 @@ fn main() {
     ))
     .add_plugins(WireframePlugin)
     .add_plugins(render::RenderPlugin)
+    .add_plugins(render::VoxelizationPlugin)
     .add_plugins(player::PlayerPlugin)
     .add_plugins(player::spectator::Spectator)
     .add_plugins(chunk::VoxelPlugin)
@@ -191,11 +192,11 @@ impl Material for CustomMaterial {
 }
 
 #[derive(Component)]
-struct Rotates;
+pub struct Rotates;
 
 fn rotate(mut q: Query<&mut Transform, With<Rotates>>, time: Res<Time>) {
     for mut t in q.iter_mut() {
         let rot = (time.elapsed_seconds().sin() * 0.5 + 0.5) * std::f32::consts::PI * 2.0;
-        t.rotation = Quat::from_rotation_z(rot);
+        t.rotation = Quat::from_rotation_z(rot) * Quat::from_rotation_x(rot);
     }
 }

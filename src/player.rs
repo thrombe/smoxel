@@ -18,8 +18,13 @@ impl Plugin for PlayerPlugin {
 fn setup(mut commands: Commands, mut _meshes: ResMut<Assets<Mesh>>) {
     let transform = Transform::from_xyz(5.0, 5.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y);
     commands.spawn((
+        Name::new("player cam"),
         Camera3dBundle {
             transform,
+            camera: Camera {
+                is_active: false,
+                ..Default::default()
+            },
             ..default()
         },
         PlayerEntity,
@@ -172,6 +177,7 @@ pub mod spectator {
     fn setup(mut commands: Commands, mut _meshes: ResMut<Assets<Mesh>>) {
         let transform = Transform::from_xyz(5.0, 5.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y);
         commands.spawn((
+            Name::new("spectator cam"),
             Camera3dBundle {
                 transform,
                 camera: Camera {
