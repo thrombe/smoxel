@@ -42,10 +42,12 @@ use bevy::{
         color::Color,
         extract_component::ExtractComponent,
         extract_instances::ExtractInstancesPlugin,
+        main_graph::node::CAMERA_DRIVER,
         mesh::{shape, Mesh, MeshVertexBufferLayout},
         render_asset::{prepare_assets, RenderAssets},
         render_graph::{
-            NodeRunError, RenderGraphApp, RenderGraphContext, ViewNode, ViewNodeRunner, Node, RenderGraph,
+            Node, NodeRunError, RenderGraph, RenderGraphApp, RenderGraphContext, ViewNode,
+            ViewNodeRunner,
         },
         render_phase::{
             sort_phase_system, AddRenderCommand, CachedRenderPipelinePhaseItem, DrawFunctionId,
@@ -56,26 +58,31 @@ use bevy::{
             AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntry, BindGroupLayout,
             BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
             BindingType::{self},
-            BufferBindingType, BufferSize, CachedRenderPipelineId, ColorTargetState, ColorWrites,
-            Extent3d, Face, ImageSubresourceRange, LoadOp, Operations, PipelineCache,
+            BufferBindingType, BufferSize, CachedComputePipelineId, CachedRenderPipelineId,
+            ColorTargetState, ColorWrites, ComputePassDescriptor, ComputePipeline,
+            ComputePipelineDescriptor, ComputePipelineId, Extent3d, Face, ImageSubresourceRange,
+            LoadOp, Operations, PipelineCache, RenderPassColorAttachment,
             RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
             Shader, ShaderDefVal, ShaderRef, ShaderSize, ShaderStages, ShaderType,
             SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
             StorageTextureAccess, Texture, TextureAspect, TextureDescriptor, TextureDimension,
             TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
-            TextureViewDimension, UniformBuffer, ComputePipeline, ComputePipelineId, ComputePipelineDescriptor, CachedComputePipelineId, ComputePassDescriptor, RenderPassColorAttachment,
+            TextureViewDimension, UniformBuffer,
         },
         renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::{FallbackImage, Image},
         view::{ExtractedView, Msaa, RenderLayers, ViewDepthTexture, ViewTarget, VisibleEntities},
-        Extract, ExtractSchedule, Render, RenderApp, RenderSet, main_graph::node::CAMERA_DRIVER,
+        Extract, ExtractSchedule, Render, RenderApp, RenderSet,
     },
     transform::components::{GlobalTransform, Transform},
     utils::{nonmax::NonMaxU32, FloatOrd, HashSet},
     window::Window,
 };
 
-use crate::{chunk::{ChunkMaterial, ChunkHandle}, player::PlayerEntity};
+use crate::{
+    chunk::{ChunkHandle, ChunkMaterial},
+    player::PlayerEntity,
+};
 
 pub struct RenderPlugin;
 
@@ -98,7 +105,7 @@ impl Plugin for WorldPlugin {
             mut meshes: ResMut<Assets<Mesh>>,
         ) {
             let pos = Vec3::new(0.0, -100.0, 0.0);
-            let voxel_size = 1.0/16.0;
+            let voxel_size = 1.0 / 16.0;
             let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
             let material = materials.add(TransientWorldMaterial {
                 side: 512,
@@ -106,19 +113,17 @@ impl Plugin for WorldPlugin {
                 chunk_position: pos,
                 voxel_size,
             });
-            
-            commands.spawn(
-                (
-                    Name::new("transient world"),
-                    MaterialMeshBundle {
-                        mesh: cube_handle,
-                        material,
-                        transform: Transform::from_translation(pos)
-                            .with_scale(Vec3::NEG_ONE * voxel_size * 512.0 / 2.0),
-                        ..Default::default()
-                    },
-                )
-            );
+
+            commands.spawn((
+                Name::new("transient world"),
+                MaterialMeshBundle {
+                    mesh: cube_handle,
+                    material,
+                    transform: Transform::from_translation(pos)
+                        .with_scale(Vec3::NEG_ONE * voxel_size * 512.0 / 2.0),
+                    ..Default::default()
+                },
+            ));
         }
         app.add_systems(Startup, setup);
     }
@@ -535,7 +540,9 @@ impl Plugin for ChunkMaterialPlugin {
         app.init_asset::<ChunkMaterial>()
             .init_asset::<TransientWorldMaterial>()
             .add_plugins(ExtractInstancesPlugin::<AssetId<ChunkMaterial>>::extract_visible())
-            .add_plugins(ExtractInstancesPlugin::<AssetId<TransientWorldMaterial>>::extract_visible());
+            .add_plugins(
+                ExtractInstancesPlugin::<AssetId<TransientWorldMaterial>>::extract_visible(),
+            );
 
         let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
             // TODO: figure out why doing this is fine.
@@ -601,9 +608,10 @@ impl Plugin for ChunkMaterialPlugin {
     fn finish(&self, app: &mut bevy::prelude::App) {
         let render_app = app.sub_app_mut(RenderApp);
 
-        render_app.init_resource::<ChunkPipeline>()
-        .init_resource::<TransientWorldPipeline>()
-        .init_resource::<ChunkDepthPipeline>();
+        render_app
+            .init_resource::<ChunkPipeline>()
+            .init_resource::<TransientWorldPipeline>()
+            .init_resource::<ChunkDepthPipeline>();
 
         render_app.add_systems(Render, update_world_data.in_set(RenderSet::Prepare));
     }
@@ -652,29 +660,27 @@ impl ViewNode for VoxelRenderNode {
         let world_data = world.resource::<WorldData>();
 
         {
-            let mut render_pass = render_context.begin_tracked_render_pass(
-                RenderPassDescriptor {
-                    label: Some("transient_world_render_pass"), 
-                    color_attachments: &[Some(target.get_color_attachment(Operations {
+            let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
+                label: Some("transient_world_render_pass"),
+                color_attachments: &[Some(target.get_color_attachment(Operations {
+                    load: LoadOp::Load,
+                    store: true,
+                }))],
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &bevy_depth_view.view,
+                    depth_ops: Some(Operations {
+                        // load: cam3d.depth_load_op.clone().into(),
                         load: LoadOp::Load,
                         store: true,
-                    }))],
-                    depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
-                        view: &bevy_depth_view.view,
-                        depth_ops: Some(Operations {
-                            // load: cam3d.depth_load_op.clone().into(),
-                            load: LoadOp::Load,
-                            store: true,
-                        }),
-                        stencil_ops: None,
                     }),
-                }
-            );
+                    stencil_ops: None,
+                }),
+            });
 
             if let Some(viewport) = cam.viewport.as_ref() {
                 render_pass.set_camera_viewport(viewport);
             }
-            
+
             transient_phase.render(&mut render_pass, world, graph.view_entity());
         }
 
@@ -689,16 +695,14 @@ impl ViewNode for VoxelRenderNode {
                 //     load: LoadOp::Load,
                 //     store: true,
                 // }))],
-                color_attachments: &[Some(
-                    RenderPassColorAttachment {
-                        view: &world_data.depth_prepass_texture_view,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Clear(Color::rgb_u8(0, 0, 0).into()),
-                            store: true,
-                        },
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &world_data.depth_prepass_texture_view,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color::rgb_u8(0, 0, 0).into()),
+                        store: true,
                     },
-                )],
+                })],
                 // depth_stencil_attachment: None,
                 depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
                     view: &world_data.depth_prepass_depth_stencil_view,
@@ -879,8 +883,9 @@ impl Plugin for VoxelizationPlugin {
     fn finish(&self, app: &mut bevy::prelude::App) {
         let render_app = app.sub_app_mut(RenderApp);
 
-        render_app.init_resource::<VoxelizationPipeline>()
-        .init_resource::<ClearNodePipeline>();
+        render_app
+            .init_resource::<VoxelizationPipeline>()
+            .init_resource::<ClearNodePipeline>();
     }
 }
 #[derive(Default)]
@@ -976,9 +981,7 @@ impl FromWorld for ClearNodePipeline {
         Self {
             pipeline_id: pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
                 label: Some("clear node pipeline".into()),
-                layout: vec![
-                    world_data.voxelization_bind_group_layout.clone(),
-                ],
+                layout: vec![world_data.voxelization_bind_group_layout.clone()],
                 push_constant_ranges: vec![],
                 shader: asset_server.load("shaders/clear.wgsl"),
                 shader_defs: vec![],
@@ -994,9 +997,7 @@ impl ClearNode {
     const NAME: &'static str = "clear_node";
 }
 impl Node for ClearNode {
-    fn update(&mut self, world: &mut bevy::prelude::World) {
-        
-    }
+    fn update(&mut self, world: &mut bevy::prelude::World) {}
     fn run(
         &self,
         graph: &mut RenderGraphContext,
@@ -1017,7 +1018,7 @@ impl Node for ClearNode {
 
         pass.set_bind_group(0, &world_data.voxelization_bind_group, &[]);
         pass.set_pipeline(p);
-        let dispatch_size = 512/4;
+        let dispatch_size = 512 / 4;
         pass.dispatch_workgroups(dispatch_size, dispatch_size, dispatch_size);
 
         Ok(())
@@ -1613,15 +1614,7 @@ pub fn queue_transient_material_meshes(
         &mut RenderPhase<TransientWorldPhaseItem>,
     )>,
 ) {
-    for (
-        view,
-        visible_entities,
-        camera_3d,
-        temporal_jitter,
-        projection,
-        mut phase,
-    ) in &mut views
-    {
+    for (view, visible_entities, camera_3d, temporal_jitter, projection, mut phase) in &mut views {
         let draw = draw_functions.read().id::<TransientWorldRenderCommand>();
 
         let mut view_key = MeshPipelineKey::from_hdr(view.hdr);
@@ -2084,7 +2077,8 @@ impl SpecializedMeshPipeline for TransientWorldPipeline {
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut desc = self.mesh_pipeline.specialize(key, layout)?;
         desc.primitive.cull_mode = Some(Face::Back);
-        desc.layout.insert(1, self.material_bind_group_layout.clone());
+        desc.layout
+            .insert(1, self.material_bind_group_layout.clone());
         desc.layout.insert(3, self.world_bind_group_layout.clone());
         let frag = desc.fragment.as_mut().unwrap();
         frag.shader = self.fragment_shader.clone();
