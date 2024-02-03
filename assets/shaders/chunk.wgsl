@@ -208,12 +208,14 @@ fn fragment(mesh: VertexOutput) -> Output {
 
     var stepi = vec3<i32>(ray_dir >= 0.0) - vec3<i32>(ray_dir < 0.0);
     var step = vec3<f32>(stepi);
+    var res: MipResult;
     #ifdef CHUNK_DEPTH_PREPASS
-        var res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+        res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+        // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
     #else
-        var res: MipResult;
         if enable_depth_prepass {
             res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+            // res = inline_no_mip_loop(o, ray_dir, step, dt);
         } else {
             // res = inline_no_mip_loop(o, ray_dir, step, dt);
             // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);

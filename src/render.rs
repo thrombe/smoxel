@@ -25,7 +25,7 @@ use bevy::{
         },
         world::FromWorld,
     },
-    math::{UVec2, Vec3},
+    math::{UVec2, Vec3, Vec4},
     pbr::{
         AlphaMode, DrawMesh, Material, MaterialMeshBundle, MaterialProperties, MeshPipeline,
         MeshPipelineKey, OpaqueRendererMethod, PreparedMaterial, RenderMaterialInstances,
@@ -75,7 +75,7 @@ use bevy::{
     window::Window,
 };
 
-use crate::{chunk::ChunkMaterial, player::PlayerEntity};
+use crate::{chunk::{ChunkMaterial, ChunkHandle}, player::PlayerEntity};
 
 pub struct RenderPlugin;
 
@@ -90,7 +90,38 @@ impl Plugin for RenderPlugin {
 
 struct WorldPlugin;
 impl Plugin for WorldPlugin {
-    fn build(&self, app: &mut bevy::prelude::App) {}
+    fn build(&self, app: &mut bevy::prelude::App) {
+        fn setup(
+            mut commands: Commands,
+            mut images: ResMut<Assets<Image>>,
+            mut materials: ResMut<Assets<TransientWorldMaterial>>,
+            mut meshes: ResMut<Assets<Mesh>>,
+        ) {
+            let pos = Vec3::new(0.0, -100.0, 0.0);
+            let voxel_size = 1.0/16.0;
+            let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
+            let material = materials.add(TransientWorldMaterial {
+                side: 512,
+                materials: images.add(ChunkHandle::material_image(vec![Vec4::ONE; 256])),
+                chunk_position: pos,
+                voxel_size,
+            });
+            
+            commands.spawn(
+                (
+                    Name::new("transient world"),
+                    MaterialMeshBundle {
+                        mesh: cube_handle,
+                        material,
+                        transform: Transform::from_translation(pos)
+                            .with_scale(Vec3::NEG_ONE * voxel_size * 512.0 / 2.0),
+                        ..Default::default()
+                    },
+                )
+            );
+        }
+        app.add_systems(Startup, setup);
+    }
 
     fn finish(&self, app: &mut bevy::prelude::App) {
         let render_device = app.world.resource::<RenderDevice>();
@@ -502,7 +533,9 @@ struct ChunkMaterialPlugin;
 impl Plugin for ChunkMaterialPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         app.init_asset::<ChunkMaterial>()
-            .add_plugins(ExtractInstancesPlugin::<AssetId<ChunkMaterial>>::extract_visible());
+            .init_asset::<TransientWorldMaterial>()
+            .add_plugins(ExtractInstancesPlugin::<AssetId<ChunkMaterial>>::extract_visible())
+            .add_plugins(ExtractInstancesPlugin::<AssetId<TransientWorldMaterial>>::extract_visible());
 
         let Ok(render_app) = app.get_sub_app_mut(RenderApp) else {
             // TODO: figure out why doing this is fine.
@@ -525,27 +558,41 @@ impl Plugin for ChunkMaterialPlugin {
             .add_systems(ExtractSchedule, extract_world_data)
             .init_resource::<DrawFunctions<ChunkDepthPhaseItem>>()
             .init_resource::<DrawFunctions<ChunkRenderPhaseItem>>()
+            .init_resource::<DrawFunctions<TransientWorldPhaseItem>>()
             .add_render_command::<ChunkDepthPhaseItem, ChunkDepthPrepass<ChunkMaterial>>()
             .add_render_command::<ChunkRenderPhaseItem, DrawMaterial<ChunkMaterial>>()
+            .add_render_command::<TransientWorldPhaseItem, TransientWorldRenderCommand>()
             .init_resource::<ExtractedMaterials<ChunkMaterial>>()
             .init_resource::<RenderMaterials<ChunkMaterial>>()
+            .init_resource::<ExtractedMaterials<TransientWorldMaterial>>()
+            .init_resource::<RenderMaterials<TransientWorldMaterial>>()
             .init_resource::<SpecializedMeshPipelines<ChunkPipeline>>()
             .init_resource::<SpecializedMeshPipelines<ChunkDepthPipeline>>()
+            .init_resource::<SpecializedMeshPipelines<TransientWorldPipeline>>()
             .add_systems(ExtractSchedule, extract_materials::<ChunkMaterial>)
+            .add_systems(ExtractSchedule, extract_materials::<TransientWorldMaterial>)
             .add_systems(
                 Render,
                 (
                     prepare_materials::<ChunkMaterial>
                         .in_set(RenderSet::PrepareAssets)
                         .after(prepare_assets::<Image>),
+                    prepare_transient_materials
+                        .in_set(RenderSet::PrepareAssets)
+                        .after(prepare_assets::<Image>),
                     sort_phase_system::<ChunkDepthPhaseItem>.in_set(RenderSet::PhaseSort),
                     sort_phase_system::<ChunkRenderPhaseItem>.in_set(RenderSet::PhaseSort),
+                    sort_phase_system::<TransientWorldPhaseItem>.in_set(RenderSet::PhaseSort),
                     queue_material_meshes::<ChunkMaterial>
                         .in_set(RenderSet::QueueMeshes)
                         .after(prepare_materials::<ChunkMaterial>),
+                    queue_transient_material_meshes
+                        .in_set(RenderSet::QueueMeshes)
+                        .after(prepare_transient_materials),
                     (
                         batch_and_prepare_render_phase::<ChunkRenderPhaseItem, MeshPipeline>,
                         batch_and_prepare_render_phase::<ChunkDepthPhaseItem, MeshPipeline>,
+                        batch_and_prepare_render_phase::<TransientWorldPhaseItem, MeshPipeline>,
                     )
                         .in_set(RenderSet::PrepareResources),
                 ),
@@ -554,8 +601,9 @@ impl Plugin for ChunkMaterialPlugin {
     fn finish(&self, app: &mut bevy::prelude::App) {
         let render_app = app.sub_app_mut(RenderApp);
 
-        render_app.init_resource::<ChunkPipeline>();
-        render_app.init_resource::<ChunkDepthPipeline>();
+        render_app.init_resource::<ChunkPipeline>()
+        .init_resource::<TransientWorldPipeline>()
+        .init_resource::<ChunkDepthPipeline>();
 
         render_app.add_systems(Render, update_world_data.in_set(RenderSet::Prepare));
     }
@@ -570,6 +618,7 @@ fn extract_render_phase(
             commands
                 .get_or_spawn(entity)
                 .insert(RenderPhase::<ChunkDepthPhaseItem>::default())
+                .insert(RenderPhase::<TransientWorldPhaseItem>::default())
                 .insert(RenderPhase::<ChunkRenderPhaseItem>::default());
         }
     }
@@ -584,6 +633,7 @@ impl ViewNode for VoxelRenderNode {
     type ViewQuery = (
         &'static RenderPhase<ChunkDepthPhaseItem>,
         &'static RenderPhase<ChunkRenderPhaseItem>,
+        &'static RenderPhase<TransientWorldPhaseItem>,
         &'static ViewTarget,
         &'static ViewDepthTexture,
         &'static Camera3d,
@@ -594,16 +644,43 @@ impl ViewNode for VoxelRenderNode {
         &self,
         graph: &mut RenderGraphContext,
         render_context: &mut RenderContext,
-        (depth_phase, render_phase, target, bevy_depth_view, cam3d, cam): QueryItem<
+        (depth_phase, render_phase, transient_phase, target, bevy_depth_view, cam3d, cam): QueryItem<
             Self::ViewQuery,
         >,
         world: &bevy::prelude::World,
     ) -> Result<(), NodeRunError> {
+        let world_data = world.resource::<WorldData>();
+
+        {
+            let mut render_pass = render_context.begin_tracked_render_pass(
+                RenderPassDescriptor {
+                    label: Some("transient_world_render_pass"), 
+                    color_attachments: &[Some(target.get_color_attachment(Operations {
+                        load: LoadOp::Load,
+                        store: true,
+                    }))],
+                    depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                        view: &bevy_depth_view.view,
+                        depth_ops: Some(Operations {
+                            // load: cam3d.depth_load_op.clone().into(),
+                            load: LoadOp::Load,
+                            store: true,
+                        }),
+                        stencil_ops: None,
+                    }),
+                }
+            );
+
+            if let Some(viewport) = cam.viewport.as_ref() {
+                render_pass.set_camera_viewport(viewport);
+            }
+            
+            transient_phase.render(&mut render_pass, world, graph.view_entity());
+        }
+
         if render_phase.items.is_empty() {
             return Ok(());
         }
-
-        let world_data = world.resource::<WorldData>();
 
         {
             let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
@@ -1128,6 +1205,59 @@ impl Default for VoxelizationBundle {
     }
 }
 
+pub struct TransientWorldPhaseItem {
+    pub distance: f32,
+    pub pipeline: CachedRenderPipelineId,
+    pub entity: Entity,
+    pub draw_function: DrawFunctionId,
+    pub batch_range: Range<u32>,
+    pub dynamic_offset: Option<NonMaxU32>,
+}
+impl PhaseItem for TransientWorldPhaseItem {
+    // NOTE: Values increase towards the camera. Front-to-back ordering for opaque means we need a descending sort.
+    type SortKey = Reverse<FloatOrd>;
+
+    #[inline]
+    fn entity(&self) -> Entity {
+        self.entity
+    }
+
+    #[inline]
+    fn sort_key(&self) -> Self::SortKey {
+        Reverse(FloatOrd(self.distance))
+    }
+
+    #[inline]
+    fn draw_function(&self) -> DrawFunctionId {
+        self.draw_function
+    }
+
+    #[inline]
+    fn batch_range(&self) -> &Range<u32> {
+        &self.batch_range
+    }
+
+    #[inline]
+    fn batch_range_mut(&mut self) -> &mut Range<u32> {
+        &mut self.batch_range
+    }
+
+    #[inline]
+    fn dynamic_offset(&self) -> Option<NonMaxU32> {
+        self.dynamic_offset
+    }
+
+    #[inline]
+    fn dynamic_offset_mut(&mut self) -> &mut Option<NonMaxU32> {
+        &mut self.dynamic_offset
+    }
+}
+impl CachedRenderPipelinePhaseItem for TransientWorldPhaseItem {
+    #[inline]
+    fn cached_pipeline(&self) -> CachedRenderPipelineId {
+        self.pipeline
+    }
+}
 pub struct ChunkRenderPhaseItem {
     pub distance: f32,
     pub pipeline: CachedRenderPipelineId,
@@ -1463,6 +1593,100 @@ pub fn queue_material_meshes<M: Material>(
         }
     }
 }
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn queue_transient_material_meshes(
+    draw_functions: Res<DrawFunctions<TransientWorldPhaseItem>>,
+    material_pipeline: Res<ChunkPipeline>,
+    pipeline: Res<TransientWorldPipeline>,
+    mut pipelines: ResMut<SpecializedMeshPipelines<TransientWorldPipeline>>,
+    pipeline_cache: Res<PipelineCache>,
+    render_meshes: Res<RenderAssets<Mesh>>,
+    render_materials: Res<RenderMaterials<TransientWorldMaterial>>,
+    mut render_mesh_instances: ResMut<RenderMeshInstances>,
+    render_material_instances: Res<RenderMaterialInstances<TransientWorldMaterial>>,
+    mut views: Query<(
+        &ExtractedView,
+        &VisibleEntities,
+        Option<&Camera3d>,
+        Option<&TemporalJitter>,
+        Option<&Projection>,
+        &mut RenderPhase<TransientWorldPhaseItem>,
+    )>,
+) {
+    for (
+        view,
+        visible_entities,
+        camera_3d,
+        temporal_jitter,
+        projection,
+        mut phase,
+    ) in &mut views
+    {
+        let draw = draw_functions.read().id::<TransientWorldRenderCommand>();
+
+        let mut view_key = MeshPipelineKey::from_hdr(view.hdr);
+
+        if temporal_jitter.is_some() {
+            view_key |= MeshPipelineKey::TEMPORAL_JITTER;
+        }
+
+        if let Some(projection) = projection {
+            view_key |= match projection {
+                Projection::Perspective(_) => MeshPipelineKey::VIEW_PROJECTION_PERSPECTIVE,
+                Projection::Orthographic(_) => MeshPipelineKey::VIEW_PROJECTION_ORTHOGRAPHIC,
+            };
+        }
+
+        let rangefinder = view.rangefinder3d();
+        for visible_entity in &visible_entities.entities {
+            let Some(material_asset_id) = render_material_instances.get(visible_entity) else {
+                continue;
+            };
+            let Some(mesh_instance) = render_mesh_instances.get_mut(visible_entity) else {
+                continue;
+            };
+            let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id) else {
+                continue;
+            };
+            let Some(material) = render_materials.get(material_asset_id) else {
+                continue;
+            };
+
+            let mut mesh_key = view_key;
+
+            mesh_key |= MeshPipelineKey::from_primitive_topology(mesh.primitive_topology);
+
+            if mesh.morph_targets.is_some() {
+                mesh_key |= MeshPipelineKey::MORPH_TARGETS;
+            }
+
+            let pipeline_id =
+                pipelines.specialize(&pipeline_cache, &pipeline, mesh_key, &mesh.layout);
+            let pipeline_id = match pipeline_id {
+                Ok(id) => id,
+                Err(err) => {
+                    bevy::log::error!("{}", err);
+                    continue;
+                }
+            };
+
+            mesh_instance.material_bind_group_id = material.get_bind_group_id();
+
+            let distance = rangefinder
+                .distance_translation(&mesh_instance.transforms.transform.translation)
+                + material.properties.depth_bias;
+
+            phase.add(TransientWorldPhaseItem {
+                entity: *visible_entity,
+                draw_function: draw,
+                pipeline: pipeline_id,
+                distance,
+                batch_range: 0..1,
+                dynamic_offset: None,
+            });
+        }
+    }
+}
 const fn tonemapping_pipeline_key(tonemapping: Tonemapping) -> MeshPipelineKey {
     match tonemapping {
         Tonemapping::None => MeshPipelineKey::TONEMAP_METHOD_NONE,
@@ -1563,6 +1787,81 @@ fn prepare_material<M: Material>(
     fallback_image: &FallbackImage,
     pipeline: &ChunkPipeline,
 ) -> Result<PreparedMaterial<M>, AsBindGroupError> {
+    let prepared = material.as_bind_group(
+        &pipeline.material_bind_group_layout,
+        render_device,
+        images,
+        fallback_image,
+    )?;
+    Ok(PreparedMaterial {
+        bindings: prepared.bindings,
+        bind_group: prepared.bind_group,
+        key: prepared.data,
+        properties: MaterialProperties {
+            alpha_mode: material.alpha_mode(),
+            depth_bias: material.depth_bias(),
+            reads_view_transmission_texture: material.reads_view_transmission_texture(),
+            render_method: OpaqueRendererMethod::Forward,
+        },
+    })
+}
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_transient_materials(
+    mut prepare_next_frame: Local<PrepareNextFrameMaterials<TransientWorldMaterial>>,
+    mut extracted_assets: ResMut<ExtractedMaterials<TransientWorldMaterial>>,
+    mut render_materials: ResMut<RenderMaterials<TransientWorldMaterial>>,
+    render_device: Res<RenderDevice>,
+    images: Res<RenderAssets<Image>>,
+    fallback_image: Res<FallbackImage>,
+    pipeline: Res<TransientWorldPipeline>,
+) {
+    let queued_assets = std::mem::take(&mut prepare_next_frame.assets);
+    for (id, material) in queued_assets.into_iter() {
+        match prepare_transient_material(
+            &material,
+            &render_device,
+            &images,
+            &fallback_image,
+            &pipeline,
+        ) {
+            Ok(prepared_asset) => {
+                render_materials.insert(id, prepared_asset);
+            }
+            Err(AsBindGroupError::RetryNextUpdate) => {
+                prepare_next_frame.assets.push((id, material));
+            }
+        }
+    }
+
+    for removed in std::mem::take(&mut extracted_assets.removed) {
+        render_materials.remove(&removed);
+    }
+
+    for (id, material) in std::mem::take(&mut extracted_assets.extracted) {
+        match prepare_transient_material(
+            &material,
+            &render_device,
+            &images,
+            &fallback_image,
+            &pipeline,
+        ) {
+            Ok(prepared_asset) => {
+                render_materials.insert(id, prepared_asset);
+            }
+            Err(AsBindGroupError::RetryNextUpdate) => {
+                prepare_next_frame.assets.push((id, material));
+            }
+        }
+    }
+}
+
+fn prepare_transient_material(
+    material: &TransientWorldMaterial,
+    render_device: &RenderDevice,
+    images: &RenderAssets<Image>,
+    fallback_image: &FallbackImage,
+    pipeline: &TransientWorldPipeline,
+) -> Result<PreparedMaterial<TransientWorldMaterial>, AsBindGroupError> {
     let prepared = material.as_bind_group(
         &pipeline.material_bind_group_layout,
         render_device,
@@ -1754,6 +2053,47 @@ impl SpecializedMeshPipeline for VoxelizationPipeline {
     }
 }
 
+#[derive(Resource)]
+pub struct TransientWorldPipeline {
+    mesh_pipeline: MeshPipeline,
+    world_bind_group_layout: BindGroupLayout,
+    material_bind_group_layout: BindGroupLayout,
+    fragment_shader: Handle<Shader>,
+}
+impl FromWorld for TransientWorldPipeline {
+    fn from_world(world: &mut bevy::prelude::World) -> Self {
+        let world_data = world.resource::<WorldData>();
+        let asset_server = world.resource::<AssetServer>();
+        let render_device = world.resource::<RenderDevice>();
+        let fragment_shader = asset_server.load("shaders/transient_world.wgsl");
+        Self {
+            mesh_pipeline: world.resource::<MeshPipeline>().clone(),
+            world_bind_group_layout: world_data.voxelization_bind_group_layout.clone(),
+            material_bind_group_layout: TransientWorldMaterial::bind_group_layout(render_device),
+            fragment_shader,
+        }
+    }
+}
+impl SpecializedMeshPipeline for TransientWorldPipeline {
+    type Key = MeshPipelineKey;
+
+    fn specialize(
+        &self,
+        key: Self::Key,
+        layout: &MeshVertexBufferLayout,
+    ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
+        let mut desc = self.mesh_pipeline.specialize(key, layout)?;
+        desc.primitive.cull_mode = Some(Face::Back);
+        desc.layout.insert(1, self.material_bind_group_layout.clone());
+        desc.layout.insert(3, self.world_bind_group_layout.clone());
+        let frag = desc.fragment.as_mut().unwrap();
+        frag.shader = self.fragment_shader.clone();
+        frag.shader_defs
+            .push(ShaderDefVal::Bool("TRANSIENT_WORLD".into(), true));
+        Ok(desc)
+    }
+}
+
 type ChunkDepthPrepass<M> = (
     SetItemPipeline,
     SetMeshViewBindGroup<0>,
@@ -1795,6 +2135,43 @@ type VoxelizationRenderCommand<M> = (
     SetWorldVoxelizationBindGroup<3>,
     DrawMesh,
 );
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone, Component, ExtractComponent)]
+pub struct TransientWorldMaterial {
+    #[uniform(0)]
+    pub side: u32,
+    #[texture(2, dimension = "1d", sample_type = "float", filterable = false)]
+    pub materials: Handle<Image>,
+    #[uniform(5)]
+    pub chunk_position: Vec3,
+    #[uniform(6)]
+    pub voxel_size: f32,
+    // #[texture(1, sample_type = "u_int", dimension = "3d")]
+    // pub voxels: Handle<Image>,
+    // #[texture(7, sample_type = "u_int", dimension = "3d")]
+    // pub voxels_mip1: Handle<Image>,
+    // #[texture(8, sample_type = "u_int", dimension = "3d")]
+    // pub voxels_mip2: Handle<Image>,
+}
+
+impl Material for TransientWorldMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/transient_world.wgsl".into()
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+}
+type TransientWorldRenderCommand = (
+    SetItemPipeline,
+    SetMeshViewBindGroup<0>,
+    SetMaterialBindGroup<TransientWorldMaterial, 1>,
+    SetMeshBindGroup<2>,
+    SetWorldVoxelizationBindGroup<3>,
+    DrawMesh,
+);
+
 struct SetWorldRenderPassBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetWorldRenderPassBindGroup<I> {
     type Param = SRes<WorldData>;

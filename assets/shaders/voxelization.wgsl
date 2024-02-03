@@ -38,7 +38,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
 fn fragment(mesh: VertexOutput) -> Output {
     var out: Output;
 
-    textureStore(transient_world_texture, vec3<i32>(mesh.world_position.xyz) + 128, vec4(1u));
+    textureStore(transient_world_texture, vec3<i32>(mesh.world_position.xyz) + 64, vec4(1u));
 
     // out.color = vec4(mesh.position.xyz / 2000.0, 0.3);
     out.color = vec4(abs(mesh.world_position.xyz) / 100.0, 1.0);
