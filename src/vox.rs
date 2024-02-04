@@ -311,7 +311,21 @@ fn load_vox(
     };
     parser.parse(0, IVec3::default(), Quat::default(), Vec3::ZERO);
 
-    let mut svo = parser.svo(7, vox_scene_entity, images, meshes);
-    svo.spawn_chunks(commands, images, chunk_materials);
-    commands.entity(vox_scene_entity).insert(svo);
+    // let mut svo = parser.svo(7, vox_scene_entity, images, meshes);
+    // svo.spawn_chunks(commands, images, chunk_materials);
+    // commands.entity(vox_scene_entity).insert(svo);
+
+    let material_handle = images.add(ChunkHandle::material_image(parser.get_materials()));
+    let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
+    let tc = parser.tiled_chunker(128);
+    tc.spawn_chunks(
+        vox_scene_entity,
+        commands,
+        images,
+        chunk_materials,
+        1.0 / 16.0,
+        &material_handle,
+        &cube_handle,
+        IVec3::ZERO,
+    );
 }

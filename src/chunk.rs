@@ -30,7 +30,7 @@ impl Plugin for VoxelPlugin {
                 || {},
                 // spawn_chunk_tasks,
                 // resolve_chunk_tasks,
-                test_dynamic_mip,
+                // test_dynamic_mip,
             ),
         );
     }
@@ -328,6 +328,7 @@ impl ChunkOctreeNode {
         }
     }
 
+    // https://www.desmos.com/calculator/fh2pi1fzfd
     #[allow(clippy::too_many_arguments)]
     fn update_chunks(
         &mut self,
@@ -380,9 +381,7 @@ impl ChunkOctreeNode {
                 let mut spawn = false;
                 let mut despawn = false;
 
-                match (
-                    dist < spawn_radius,
-                ) {
+                match (dist < spawn_radius,) {
                     (true,) => {
                         spawn = true;
                     }
@@ -430,12 +429,8 @@ impl ChunkOctreeNode {
                         let mut spawn = spawn;
                         let mut despawn = despawn;
 
-                        match (
-                            dist < spawn_radius,
-                            height == chunk_height + 1,
-                        ) {
-                            (_, true) => {
-                            }
+                        match (dist < spawn_radius, height == chunk_height + 1) {
+                            (_, true) => {}
                             (true, false) => {
                                 spawn = false;
                                 despawn = true;
@@ -680,6 +675,42 @@ impl TiledChunker {
                 self.chunks.insert(i1, c);
                 v
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_chunks(
+        self,
+        scene_entity: Entity,
+        commands: &mut Commands,
+        images: &mut Assets<Image>,
+        chunk_materials: &mut Assets<ChunkMaterial>,
+        voxel_physical_size: f32,
+        materials: &Handle<Image>,
+        cube_mesh: &Handle<Mesh>,
+        chunk_pos: IVec3,
+    ) {
+        for (pos, bytechunk) in self.chunks {
+            let mip1 = bytechunk.mip();
+            let mip2 = mip1.mip();
+
+            let mut chunk = Chunk {
+                byte: bytechunk,
+                mip1,
+                mip2,
+                entity: None,
+            };
+
+            chunk.spawn(
+                scene_entity,
+                commands,
+                images,
+                chunk_materials,
+                voxel_physical_size,
+                materials,
+                cube_mesh,
+                (pos + chunk_pos).as_vec3() * self.chunk_side as f32 * voxel_physical_size,
+            );
         }
     }
 }
