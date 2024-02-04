@@ -74,9 +74,10 @@ use bevy::{
         view::{ExtractedView, Msaa, RenderLayers, ViewDepthTexture, ViewTarget, VisibleEntities},
         Extract, ExtractSchedule, Render, RenderApp, RenderSet,
     },
+    scene::SceneBundle,
     transform::components::{GlobalTransform, Transform},
     utils::{nonmax::NonMaxU32, FloatOrd, HashSet},
-    window::Window,
+    window::Window, time::{Timer, TimerMode, Time},
 };
 
 use crate::{
@@ -170,6 +171,7 @@ struct WorldData {
     voxelizer_camera_depth_stencil_view: TextureView,
 
     uniforms: UniformBuffer<WorldDataUniforms>,
+    voxelization_timer: Timer,
 }
 impl WorldData {
     fn new_default(render_device: &RenderDevice, render_queue: &RenderQueue) -> Self {
@@ -278,6 +280,7 @@ impl WorldData {
             voxelizer_camera_depth_stencil: voxelizer_camera_depth_stencil_texture,
             voxelizer_camera_depth_stencil_view,
             uniforms,
+            voxelization_timer: Timer::from_seconds(1.0/10.0, TimerMode::Repeating),
         }
     }
 
@@ -286,7 +289,9 @@ impl WorldData {
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
         uniforms: &WorldDataUniforms,
+        time: &Time,
     ) {
+        self.voxelization_timer.tick(time.delta());
         if self.uniforms.get().screen_resolution != uniforms.screen_resolution {
             self.resize_depth_prepass(
                 render_device,
@@ -915,6 +920,10 @@ impl ViewNode for VoxelizationRenderNode {
 
         let world_data = world.resource::<WorldData>();
 
+        if !world_data.voxelization_timer.finished() {
+            return Ok(());
+        }
+
         {
             // TODO: clear this texture in a compute pass
             // TODO: execute this rendering + clearing across a bunch of frames
@@ -1007,6 +1016,10 @@ impl Node for ClearNode {
         let pipeline = world.resource::<ClearNodePipeline>();
         let pipeline_cache = world.resource::<PipelineCache>();
         let world_data = world.resource::<WorldData>();
+
+        if !world_data.voxelization_timer.finished() {
+            return Ok(());
+        }
 
         let Some(p) = pipeline_cache.get_compute_pipeline(pipeline.pipeline_id) else {
             return Ok(());
@@ -1447,8 +1460,9 @@ fn update_world_data(
     world_data_uniforms: Res<WorldDataUniforms>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    time: Res<Time>,
 ) {
-    world_data.update(&render_device, &render_queue, &world_data_uniforms);
+    world_data.update(&render_device, &render_queue, &world_data_uniforms, &time);
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
