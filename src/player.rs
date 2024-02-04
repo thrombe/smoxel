@@ -36,7 +36,7 @@ fn update(
     keys: Res<Input<KeyCode>>,
     mouse_keys: Res<Input<MouseButton>>,
     mut mouse_events: EventReader<MouseMotion>,
-    // time: Res<Time>,
+    time: Res<Time>,
     mut window: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     let mut wind = window.single_mut();
@@ -84,7 +84,7 @@ fn update(
     for e in mouse_events.read() {
         mouse_delta += e.delta;
     }
-    mouse_delta *= 0.002;
+    mouse_delta *= time.delta_seconds() * 0.1;
 
     {
         let mut rotation = transform.rotation;
@@ -124,7 +124,7 @@ fn update(
     if keys.pressed(KeyCode::ControlLeft) {
         translation /= 5.0;
     }
-    transform.translation += translation;
+    transform.translation += translation * 100.0 * time.delta_seconds();
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Default, States)]
@@ -196,7 +196,7 @@ pub mod spectator {
         keys: Res<Input<KeyCode>>,
         mouse_keys: Res<Input<MouseButton>>,
         mut mouse_events: EventReader<MouseMotion>,
-        // time: Res<Time>,
+        time: Res<Time>,
         mut window: Query<&mut Window, With<PrimaryWindow>>,
     ) {
         let mut wind = window.single_mut();
@@ -244,7 +244,7 @@ pub mod spectator {
         for e in mouse_events.read() {
             mouse_delta += e.delta;
         }
-        mouse_delta *= 0.002;
+        mouse_delta *= time.delta_seconds() * 0.1;
 
         {
             let mut rotation = transform.rotation;
@@ -284,6 +284,6 @@ pub mod spectator {
         if keys.pressed(KeyCode::ControlLeft) {
             translation /= 5.0;
         }
-        transform.translation += translation;
+        transform.translation += translation * 100.0 * time.delta_seconds();
     }
 }
