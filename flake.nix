@@ -91,6 +91,14 @@
               '';
             })
             (pkgs.buildFHSEnv {
+              name = "renderdoc";
+              targetPkgs = packages;
+              runScript = ''
+                #!/usr/bin/env bash
+                nvidia-offload ${renderdoc}/bin/qrenderdoc
+              '';
+            })
+            (pkgs.buildFHSEnv {
               name = "fhs-shell";
               targetPkgs = packages;
             })
