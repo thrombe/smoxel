@@ -197,6 +197,6 @@ pub struct Rotates;
 fn rotate(mut q: Query<&mut Transform, With<Rotates>>, time: Res<Time>) {
     for mut t in q.iter_mut() {
         let rot = (time.elapsed_seconds().sin() * 0.5 + 0.5) * std::f32::consts::PI * 2.0;
-        t.rotation = Quat::from_rotation_z(rot) * Quat::from_rotation_x(rot);
+        t.rotation = Quat::from_rotation_y(rot) * Quat::from_rotation_x(-std::f32::consts::PI/2.0);
     }
 }

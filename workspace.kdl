@@ -56,7 +56,7 @@ layout {
             }
             pane start_suspended=true name="run-release" {
                 command "zsh"
-                args "-ic" "cargo build --release && game-release"
+                args "-ic" "cargo build --release --no-default-features && game-release"
             }
             pane start_suspended=true name="renderdoc" {
                 command "renderdoc"

@@ -176,7 +176,8 @@ fn inline_no_mip_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, dt: ve
     for (var i = 0u; i < side * 3u - 2u; i += 1u) {
         voxel = get_voxel(march);
         if (voxel != 0u) {
-            res.color = get_color(voxel);
+            // res.color = get_color(voxel);
+            res.color = vec4(vec3<f32>(march)/300.0 * t * 0.0051, 1.0);
             res.hit = true;
             return res;
         }
