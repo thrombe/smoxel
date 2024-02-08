@@ -42,12 +42,12 @@ fn test_voxels(
     mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    let scene_pos = Vec3::new(0.0, -500.0, 0.0);
+    let scene_pos = IVec3::new(0, 0, 0);
     let scene_entity = commands
         .spawn((
             Name::new("test voxels"),
             GlobalTransform::default(),
-            Transform::from_translation(scene_pos),
+            Transform::from_translation(scene_pos.as_vec3()),
             VisibilityBundle::default(),
         ))
         .id();
@@ -86,47 +86,18 @@ fn test_voxels(
         .collect();
 
     let material_handle = images.add(ChunkHandle::material_image(materials));
-    let cube_handle = meshes.add(Mesh::from(shape::Cube { size: size * 2.0 }));
-    for (chunk_index, chunk) in tc.chunks.into_iter() {
-        let chunk_pos = Vec3::new(chunk_index.x as _, chunk_index.y as _, chunk_index.z as _);
-        let chunk_pos = chunk_pos * size * 2.0;
+    let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
 
-        let side = chunk.side;
-
-        let mip1 = chunk.mip();
-        let mip2 = mip1.mip();
-        let voxels_handle = images.add(chunk.to_image());
-        let mip1_handle = images.add(mip1.into_image());
-        let mip2_handle = images.add(mip2.into_image());
-        let chunk = ChunkHandle {
-            voxels: voxels_handle.clone(),
-            materials: material_handle.clone(),
-            side,
-        };
-
-        let chunk_material = chunk_materials.add(ChunkMaterial {
-            side: side as _,
-            voxels: voxels_handle.clone(),
-            materials: material_handle.clone(),
-            chunk_position: chunk_pos + scene_pos,
-            voxel_size,
-            voxels_mip1: mip1_handle,
-            voxels_mip2: mip2_handle,
-        });
-
-        commands.entity(scene_entity).with_children(|builder| {
-            builder.spawn((
-                Name::new("test voxel chunk"),
-                MaterialMeshBundle {
-                    mesh: cube_handle.clone(),
-                    material: chunk_material,
-                    transform: Transform::from_translation(chunk_pos).with_scale(Vec3::NEG_ONE),
-                    ..Default::default()
-                },
-                chunk,
-            ));
-        });
-    }
+    tc.spawn_chunks(
+        scene_entity,
+        &mut commands,
+        &mut images,
+        &mut chunk_materials,
+        voxel_size,
+        &material_handle,
+        &cube_handle,
+        scene_pos,
+    );
 }
 
 fn test_dynamic_mip(
