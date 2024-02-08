@@ -1,3 +1,5 @@
+use std::ops::AddAssign;
+
 use bevy::{
     prelude::*,
     render::{
@@ -922,20 +924,60 @@ pub struct ByteChunk {
 }
 
 impl ByteChunk {
-    #[allow(clippy::identity_op)]
     pub fn mip1_bytechunk(&self) -> Self {
-        assert_eq!(self.side % 2, 0, "side should be divisible by 2");
-        let new_side = self.side / 2;
+        let tc = TChunk::mip1_tchunk_from_slice(&self.voxels, self.side);
+        Self {
+            voxels: tc.voxels,
+            side: tc.side,
+        }
+    }
+
+    pub fn mip(&self) -> MipChunk {
+        TChunk::mip_from_slice(&self.voxels, self.side)
+    }
+
+    pub fn to_image(self) -> Image {
+        Image::new(
+            Extent3d {
+                width: self.side as _,
+                height: self.side as _,
+                depth_or_array_layers: self.side as _,
+            },
+            TextureDimension::D3,
+            self.voxels,
+            TextureFormat::R8Uint,
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TChunk<T> {
+    pub voxels: Vec<T>,
+    pub side: usize,
+}
+
+impl<T> TChunk<T>
+where
+    T: From<u8> + Copy + PartialEq + PartialOrd + AddAssign,
+{
+    pub fn mip1_tchunk(&self) -> Self {
+        Self::mip1_tchunk_from_slice(&self.voxels, self.side)
+    }
+
+    #[allow(clippy::identity_op)]
+    pub fn mip1_tchunk_from_slice(voxels: &[T], side: usize) -> Self {
+        assert_eq!(side % 2, 0, "side should be divisible by 2");
+        let new_side = side / 2;
         let mut bc = Self {
-            voxels: vec![0; new_side.pow(3)],
+            voxels: vec![0u8.into(); new_side.pow(3)],
             side: new_side,
         };
-        let voxel = |z, y, x| self.voxels[z * self.side.pow(2) + y * self.side + x];
+        let voxel = |z, y, x| voxels[z * side.pow(2) + y * side + x];
 
         for z in 0..new_side {
             for y in 0..new_side {
                 for x in 0..new_side {
-                    let mut voxels = [(0u8, 0u8); 8];
+                    let mut voxels: [(T, T); 8] = [(0u8.into(), 0u8.into()); 8];
                     let samples = [
                         voxel(z * 2 + 0, y * 2 + 0, x * 2 + 0),
                         voxel(z * 2 + 0, y * 2 + 0, x * 2 + 1),
@@ -948,11 +990,11 @@ impl ByteChunk {
                     ];
                     for sample in samples {
                         for i in 0..8 {
-                            if voxels[i].0 == 0 {
-                                voxels[i] = (sample, 1);
+                            if voxels[i].0 == 0u8.into() {
+                                voxels[i] = (sample, 1u8.into());
                                 break;
                             } else if voxels[i].0 == sample {
-                                voxels[i].1 += 1;
+                                voxels[i].1 += 1u8.into();
                                 if voxels[i].1 > voxels[0].1 {
                                     voxels.swap(0, i);
                                 }
@@ -968,17 +1010,20 @@ impl ByteChunk {
         bc
     }
 
+    pub fn mip(&self) -> MipChunk {
+        Self::mip_from_slice(&self.voxels, self.side)
+    }
+
     // chunk side should be a multiple of 4
     // 1 byte stores 2x2x2 voxels each a single bit
     // 1 vec2<u32> stores 2x2x2 bytes, so 4x4x4 voxels
     // can use TextureFormat::Rg32Uint
     #[allow(clippy::erasing_op, clippy::identity_op)]
-    pub fn mip(&self) -> MipChunk {
-        let side = self.side;
+    pub fn mip_from_slice(voxels: &[T], side: usize) -> MipChunk {
         let new_side = side / 4;
         assert_eq!(side % 4, 0, "side should be a multiple of 4");
 
-        let voxel = |z, y, x| (self.voxels[z * side.pow(2) + y * side + x] != 0) as u32;
+        let voxel = |z, y, x| (voxels[z * side.pow(2) + y * side + x] != 0u8.into()) as u32;
         let byte = |z, y, x| {
             000 | voxel(z + 0, y + 0, x + 0) << 0b000
                 | voxel(z + 0, y + 0, x + 1) << 0b001
@@ -1013,19 +1058,6 @@ impl ByteChunk {
         }
         MipChunk { voxels: mip, side }
     }
-
-    pub fn to_image(self) -> Image {
-        Image::new(
-            Extent3d {
-                width: self.side as _,
-                height: self.side as _,
-                depth_or_array_layers: self.side as _,
-            },
-            TextureDimension::D3,
-            self.voxels,
-            TextureFormat::R8Uint,
-        )
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -1039,18 +1071,22 @@ pub struct MipChunk {
 }
 
 impl MipChunk {
+    pub fn mip(&self) -> Self {
+        Self::mip_from_slice(&self.voxels, self.side)
+    }
+
     // from mip (0, 1, 2) to (3, 4, 5)
     // 0 -> 1 bit
     // 1 -> 1 byte, 2x2x2 voxels
     // 2 -> 2 x u32, 4x4x4 voxels
     #[allow(clippy::erasing_op, clippy::identity_op)]
-    pub fn mip(&self) -> MipChunk {
-        let mip_side = self.side / 4;
+    pub fn mip_from_slice(voxels: &[UVec2], side: usize) -> Self {
+        let mip_side = side / 4;
         let new_side = mip_side / 8;
-        assert_eq!(self.side % (4 * 8), 0, "side should be a multiple of 32");
+        assert_eq!(side % (4 * 8), 0, "side should be a multiple of 32");
 
         let bit = |z, y, x| {
-            let chunk: &UVec2 = &self.voxels[z * mip_side.pow(2) + y * mip_side + x];
+            let chunk: &UVec2 = &voxels[z * mip_side.pow(2) + y * mip_side + x];
             chunk.x != 0 || chunk.y != 0
         };
         let voxel = |z, y, x| {
