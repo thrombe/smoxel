@@ -144,6 +144,17 @@ fn fragment(mesh: VertexOutput) -> Output {
         // out.color = vec4<f32>(abs(chunk_pos.xz - world_data.player_pos.xz)/100.0, 0.0, 0.0);
         // out.color = vec4(chunk_pos.xz - mesh.world_position.xz, 0.0, 0.0);
         // return out;
+
+        // #ifdef CHUNK_RENDER_PASS
+        // let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
+        // let t = 256.0 * 4.0;
+        // let uv = floor(screen_uv * t);
+        // let index = uv.y * t + uv.x;
+        // out.color = vec4(f32(bit_world_chunk_indices[i32(index)] > 0u));
+        // // out.color = vec4(uv/256.0, 1.0, 1.0);
+        // // out.color = vec4(index / 100000.0);
+        // return out;
+        // #endif
     }
     let screen_uv = mesh.position.xy/vec2<f32>(world_data.screen_resolution.xy);
     let ray_origin = world_data.player_pos.xyz;
@@ -226,10 +237,12 @@ fn fragment(mesh: VertexOutput) -> Output {
         if enable_depth_prepass {
             res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             // res = inline_no_mip_loop(o, ray_dir, step, dt);
+            // res = bitworld_trace(ray_pos, ray_dir, step, dt);
         } else {
             // res = inline_no_mip_loop(o, ray_dir, step, dt);
             // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+            // res = bitworld_trace(ray_pos, ray_dir, step, dt);
         }
     #endif
     res.t *= voxel_size;
@@ -243,6 +256,16 @@ fn fragment(mesh: VertexOutput) -> Output {
     #endif
 
     if res.hit {
+        #ifdef CHUNK_RENDER_PASS
+            let dir = normalize(vec3(1.0, 1.0, 1.0));
+            let pos = ray_origin + ray_dir * res.t * 1.0 + dir * 1.0;
+            // out.color = vec4(pos/200.0, 1.0);
+            // out.color = vec4(vec3(res.t/300.0), 1.0);
+            var sun_res = bitworld_trace(pos, dir, step, dt);
+            if sun_res.hit {
+                out.color *= 0.5;
+            }
+        #endif
         return out;
     }
 
@@ -253,6 +276,94 @@ fn fragment(mesh: VertexOutput) -> Output {
     #else
         discard;
     #endif
+}
+
+fn bitworld_trace(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, dt: vec3<f32>) -> MipResult {
+    var res: MipResult;
+    res.hit = false;
+    res.color = vec4(0.0);
+
+    let su = i32(bit_world_uniforms.world_side);
+    let s = f32(su);
+    // if bit_world_uniforms.world_side == 32u {
+    //     res.color = vec4(bit_world_uniforms.pos, 1.0);
+    //     res.hit = true;
+    //     return res;
+    // }
+    
+    // let chunk_mip = bit_world_chunk_indices;
+    var o = (_o - bit_world_uniforms.pos) + ray_dir * 0.001;
+    o /= voxel_size;
+    o += s / 2.0 * f32(bit_world_uniforms.chunk_side);
+    // if true {
+    //     res.hit = true;
+    //     let marchi = vec3<i32>(o)/128;
+    //     let index = marchi.z * su * su + marchi.y * su + marchi.x;
+    //     // res.color = vec4(vec3<f32>(marchi)/(32.0 * 1.0), 1.0);
+    //     res.color = vec4(vec3(f32(bit_world_chunk_indices[index] > 0u)), 1.0);
+    //     // res.color = vec4(o/100000.0, 1.0);
+    //     return res;
+    // }
+
+    let sw = i32(bit_world_uniforms.world_side);
+    let sc = i32(bit_world_uniforms.chunk_side);
+    for (var i = 0; i < 64; i += 1) {
+        if any(o > f32(sw * sc)) || any(o < 0.0) {
+            break;
+        }
+        let marchi = vec3<i32>(o)/sc;
+        let index = marchi.z * sw * sw + marchi.y * sw + marchi.x;
+        let chunk_index = bit_world_chunk_indices[index];
+        if chunk_index > 0u {
+            let v_pos = vec3<i32>(o) - marchi * sc;
+            // if true {
+            //     res.color = vec4(vec3<f32>(v_pos), 1.0);
+            //     res.hit = true;
+            //     return res;
+            // }
+            let marchi = v_pos / 4;
+            let sc = sc / 4;
+            let index = marchi.z * sc * sc + marchi.y * sc + marchi.x;
+            let voxel = bit_world_chunk_buffer[chunk_index + u32(index)];
+            if any(voxel > 0u) {
+                // res.color = vec4(1.0);
+                // res.color = get_color(get_voxel(vec3<f32>(v_pos)));
+                res.hit = true;
+                return res;
+            }
+        }
+
+        o += ray_dir * 4.0;
+    }
+
+    // // how much t untill we hit a plane along this axis
+    // var t = (step * 0.5 + 0.5 - fract(o) * step) * dt;
+    // // current voxel position (offset to center of the voxel)
+    // var march = floor(o) + 0.5;
+
+    // var voxel: u32;
+    // var mask: vec3<f32>;
+    // for (var i = 0u; i < side * 3u - 2u; i += 1u) {
+    //     let marchi = vec3<i32>(march);
+    //     let index = marchi.z * s * s + marchi.y * s + marchi.x;
+
+    //     // voxel = chunk_mip[index];
+    //     if (voxel != 0u) {
+    //         res.color = vec4(0.8);
+    //         res.hit = true;
+    //         return res;
+    //     }
+
+    //     mask = vec3<f32>(t.xyz <= min(t.yzx, t.zxy));
+    //     t += mask * dt;
+    //     march += mask * step;
+    // }
+
+    return res;
+}
+
+fn trace_sun() -> vec3<f32> {
+    return vec3<f32>(0.0);
 }
 
 struct MipResult {
