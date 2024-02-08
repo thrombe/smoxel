@@ -442,7 +442,9 @@ impl ChunkOctreeNode {
     // TODO: very inefficient
     fn update_mip(&mut self, chunk_height: u32) {
         match self {
-            Self::Chunk { .. } => (),
+            Self::Chunk { voxels } => {
+                voxels.update_mips();
+            }
             Self::Node { chunks, mip } => {
                 chunks
                     .iter_mut()
@@ -878,15 +880,11 @@ impl Chunk {
         cube_mesh: &Handle<Mesh>,
         chunk_pos: Vec3,
     ) {
-        let chunk = &self.byte;
+        let side = self.byte.side;
 
-        let side = chunk.side;
-
-        let mip1 = chunk.mip();
-        let mip2 = mip1.mip();
-        let voxels_handle = images.add(chunk.clone().to_image());
-        let mip1_handle = images.add(mip1.into_image());
-        let mip2_handle = images.add(mip2.into_image());
+        let voxels_handle = images.add(self.byte.clone().to_image());
+        let mip1_handle = images.add(self.mip1.clone().into_image());
+        let mip2_handle = images.add(self.mip2.clone().into_image());
 
         let chunk_material = chunk_materials.add(ChunkMaterial {
             side: side as _,
