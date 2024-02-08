@@ -22,7 +22,6 @@ fn setup(mut commands: Commands, mut _meshes: ResMut<Assets<Mesh>>) {
         Camera3dBundle {
             transform,
             camera: Camera {
-                is_active: false,
                 ..Default::default()
             },
             ..default()

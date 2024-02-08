@@ -1,5 +1,5 @@
 use core::panic;
-use std::{cmp::Reverse, ops::Range};
+use std::{cmp::Reverse, num::NonZeroU64, ops::Range};
 
 use bevy::{
     app::{Plugin, Startup},
@@ -25,7 +25,7 @@ use bevy::{
         },
         world::FromWorld,
     },
-    math::{UVec2, Vec3, Vec4},
+    math::{IVec3, UVec2, Vec3, Vec4},
     pbr::{
         AlphaMode, DrawMesh, Material, MaterialMeshBundle, MaterialProperties, MeshPipeline,
         MeshPipelineKey, OpaqueRendererMethod, PreparedMaterial, RenderMaterialInstances,
@@ -58,16 +58,16 @@ use bevy::{
             AsBindGroup, AsBindGroupError, BindGroup, BindGroupEntry, BindGroupLayout,
             BindGroupLayoutDescriptor, BindGroupLayoutEntry, BindingResource,
             BindingType::{self},
-            BufferBindingType, BufferSize, CachedComputePipelineId, CachedRenderPipelineId,
-            ColorTargetState, ColorWrites, ComputePassDescriptor, ComputePipeline,
-            ComputePipelineDescriptor, ComputePipelineId, Extent3d, Face, ImageSubresourceRange,
-            LoadOp, Operations, PipelineCache, RenderPassColorAttachment,
-            RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipelineDescriptor,
-            Shader, ShaderDefVal, ShaderRef, ShaderSize, ShaderStages, ShaderType,
-            SpecializedMeshPipeline, SpecializedMeshPipelineError, SpecializedMeshPipelines,
-            StorageTextureAccess, Texture, TextureAspect, TextureDescriptor, TextureDimension,
-            TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
-            TextureViewDimension, UniformBuffer,
+            Buffer, BufferBindingType, BufferInitDescriptor, BufferSize, BufferUsages,
+            CachedComputePipelineId, CachedRenderPipelineId, ColorTargetState, ColorWrites,
+            ComputePassDescriptor, ComputePipeline, ComputePipelineDescriptor, ComputePipelineId,
+            Extent3d, Face, ImageSubresourceRange, LoadOp, Operations, PipelineCache,
+            RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+            RenderPipelineDescriptor, Shader, ShaderDefVal, ShaderRef, ShaderSize, ShaderStages,
+            ShaderType, SpecializedMeshPipeline, SpecializedMeshPipelineError,
+            SpecializedMeshPipelines, StorageTextureAccess, Texture, TextureAspect,
+            TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
+            TextureView, TextureViewDescriptor, TextureViewDimension, UniformBuffer,
         },
         renderer::{RenderContext, RenderDevice, RenderQueue},
         texture::{FallbackImage, Image},
@@ -75,13 +75,14 @@ use bevy::{
         Extract, ExtractSchedule, Render, RenderApp, RenderSet,
     },
     scene::SceneBundle,
+    time::{Time, Timer, TimerMode},
     transform::components::{GlobalTransform, Transform},
     utils::{nonmax::NonMaxU32, FloatOrd, HashSet},
-    window::Window, time::{Timer, TimerMode, Time},
+    window::Window,
 };
 
 use crate::{
-    chunk::{ChunkHandle, ChunkMaterial},
+    chunk::{BitWorld, ChunkHandle, ChunkMaterial, ChunkOctree, ChunkOctreeModified},
     player::PlayerEntity,
 };
 
@@ -137,6 +138,21 @@ impl Plugin for WorldPlugin {
         let render_app = app.sub_app_mut(RenderApp);
         render_app.insert_resource(world_data);
         render_app.init_resource::<WorldDataUniforms>();
+        render_app.add_systems(ExtractSchedule, update_bit_world);
+    }
+}
+
+fn update_bit_world(
+    mut commands: Commands,
+    mut world_data: ResMut<WorldData>,
+    mut come: Extract<EventReader<ChunkOctreeModified>>,
+    svo: Extract<Query<(&ChunkOctree, &GlobalTransform)>>,
+) {
+    for _ in come.read() {
+        for (svo, transform) in svo.iter() {
+            world_data.update_bit_world(svo, transform.translation());
+            world_data.upload_bit_world = true;
+        }
     }
 }
 
@@ -170,8 +186,14 @@ struct WorldData {
     voxelizer_camera_depth_stencil: Texture,
     voxelizer_camera_depth_stencil_view: TextureView,
 
+    upload_bit_world: bool,
+    bit_world_chunk_buffer: Buffer,
+    bit_world_chunk_indices: Buffer,
+    bit_world_uniforms: UniformBuffer<BitWorldUniforms>,
+
     uniforms: UniformBuffer<WorldDataUniforms>,
     voxelization_timer: Timer,
+    bit_world: BitWorld,
 }
 impl WorldData {
     fn new_default(render_device: &RenderDevice, render_queue: &RenderQueue) -> Self {
@@ -217,6 +239,32 @@ impl WorldData {
         let voxelizer_camera_depth_stencil_view =
             voxelizer_camera_depth_stencil_texture.create_view(&TextureViewDescriptor::default());
 
+        let bit_world = BitWorld::new();
+        let bit_world_chunk_buffer = render_device.create_buffer_with_data(&BufferInitDescriptor {
+            label: Some("bit_world_chunk_buffer"),
+            contents: &bit_world
+                .chunk_buffer
+                .iter()
+                .cloned()
+                .flat_map(|v| [v.x.to_le_bytes(), v.y.to_le_bytes()])
+                .flatten()
+                .collect::<Vec<_>>(),
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        });
+        let bit_world_chunk_indices =
+            render_device.create_buffer_with_data(&BufferInitDescriptor {
+                label: Some("bit_world_chunk_indices"),
+                contents: &bit_world
+                    .chunk_indices
+                    .iter()
+                    .copied()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            });
+        let mut bit_world_uniforms = UniformBuffer::from(BitWorldUniforms::default());
+        bit_world_uniforms.write_buffer(render_device, render_queue);
+
         let mut uniforms = UniformBuffer::from(WorldDataUniforms::default());
         uniforms.write_buffer(render_device, render_queue);
         Self {
@@ -235,6 +283,18 @@ impl WorldData {
                     BindGroupEntry {
                         binding: 2,
                         resource: BindingResource::TextureView(&depth_pass_target_view),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: bit_world_uniforms.binding().unwrap(),
+                    },
+                    BindGroupEntry {
+                        binding: 4,
+                        resource: bit_world_chunk_buffer.as_entire_binding(),
+                    },
+                    BindGroupEntry {
+                        binding: 5,
+                        resource: bit_world_chunk_indices.as_entire_binding(),
                     },
                 ],
             ),
@@ -280,7 +340,12 @@ impl WorldData {
             voxelizer_camera_depth_stencil: voxelizer_camera_depth_stencil_texture,
             voxelizer_camera_depth_stencil_view,
             uniforms,
-            voxelization_timer: Timer::from_seconds(1.0/10.0, TimerMode::Repeating),
+            bit_world,
+            upload_bit_world: false,
+            bit_world_chunk_buffer,
+            bit_world_chunk_indices,
+            bit_world_uniforms,
+            voxelization_timer: Timer::from_seconds(1.0 / 10.0, TimerMode::Repeating),
         }
     }
 
@@ -310,6 +375,40 @@ impl WorldData {
         self.uniforms.set(uniforms.clone());
         self.uniforms.write_buffer(render_device, render_queue);
 
+        if self.upload_bit_world {
+            self.upload_bit_world = false;
+            let bit_world_chunk_buffer =
+                render_device.create_buffer_with_data(&BufferInitDescriptor {
+                    label: Some("bit_world_chunk_buffer"),
+                    contents: &self
+                        .bit_world
+                        .chunk_buffer
+                        .iter()
+                        .cloned()
+                        .flat_map(|v| [v.x.to_le_bytes(), v.y.to_le_bytes()])
+                        .flatten()
+                        .collect::<Vec<_>>(),
+                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                });
+            let bit_world_chunk_indices =
+                render_device.create_buffer_with_data(&BufferInitDescriptor {
+                    label: Some("bit_world_chunk_indices"),
+                    contents: &self
+                        .bit_world
+                        .chunk_indices
+                        .iter()
+                        .copied()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect::<Vec<_>>(),
+                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                });
+            self.bit_world_uniforms
+                .write_buffer(render_device, render_queue);
+
+            self.bit_world_chunk_buffer = bit_world_chunk_buffer;
+            self.bit_world_chunk_indices = bit_world_chunk_indices;
+        }
+
         let bind_group = render_device.create_bind_group(
             Some("world data bind group"),
             &self.render_pass_bind_group_layout,
@@ -325,6 +424,18 @@ impl WorldData {
                 BindGroupEntry {
                     binding: 2,
                     resource: BindingResource::TextureView(&self.depth_prepass_texture_view),
+                },
+                BindGroupEntry {
+                    binding: 3,
+                    resource: self.bit_world_uniforms.binding().unwrap(),
+                },
+                BindGroupEntry {
+                    binding: 4,
+                    resource: self.bit_world_chunk_buffer.as_entire_binding(),
+                },
+                BindGroupEntry {
+                    binding: 5,
+                    resource: self.bit_world_chunk_indices.as_entire_binding(),
                 },
             ],
         );
@@ -345,6 +456,16 @@ impl WorldData {
             ],
         );
         self.depth_pass_bind_group = bind_group;
+    }
+
+    fn update_bit_world(&mut self, svo: &ChunkOctree, pos: Vec3) {
+        svo.root
+            .insert_to_bit_world(&mut self.bit_world, IVec3::ZERO);
+        self.bit_world_uniforms.set(BitWorldUniforms {
+            chunk_side: self.bit_world.chunk_side as _,
+            pos,
+            world_side: 2u32.pow(5),
+        });
     }
 
     fn resize_depth_prepass(&mut self, render_device: &RenderDevice, size: Extent3d) {
@@ -415,6 +536,36 @@ impl WorldData {
                         view_dimension: TextureViewDimension::D2,
                         sample_type: TextureSampleType::Float { filterable: false },
                         multisampled: false,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: BufferSize::new(BitWorldUniforms::SHADER_SIZE.into()),
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: ShaderStages::FRAGMENT | ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -499,6 +650,13 @@ impl WorldData {
             view_formats: &[],
         })
     }
+}
+
+#[derive(Default, Debug, Clone, ShaderType, Resource)]
+struct BitWorldUniforms {
+    chunk_side: u32,
+    world_side: u32,
+    pos: Vec3,
 }
 
 #[derive(Default, Debug, Clone, ShaderType, Resource)]
@@ -664,7 +822,7 @@ impl ViewNode for VoxelRenderNode {
     ) -> Result<(), NodeRunError> {
         let world_data = world.resource::<WorldData>();
 
-        {
+        if !transient_phase.items.is_empty() {
             let mut render_pass = render_context.begin_tracked_render_pass(RenderPassDescriptor {
                 label: Some("transient_world_render_pass"),
                 color_attachments: &[Some(target.get_color_attachment(Operations {
@@ -772,6 +930,7 @@ impl Plugin for VoxelizationPlugin {
             mut meshes: ResMut<Assets<Mesh>>,
             mut materials: ResMut<Assets<VoxelizationMaterial>>,
             mut images: ResMut<Assets<Image>>,
+            asset_server: Res<AssetServer>,
         ) {
             for i in -3..0 {
                 let mut transform = Transform::from_translation(Vec3::ZERO);
@@ -1961,7 +2120,8 @@ impl SpecializedMeshPipeline for ChunkPipeline {
         desc.layout.insert(3, self.world_bind_group_layout.clone());
         let frag = desc.fragment.as_mut().unwrap();
         frag.shader = self.chunk_fragment_shader.clone();
-        // frag.shader_defs.push(ShaderDefVal::Bool("CHUNK_DEPTH_PREPASS".into(), false));
+        frag.shader_defs
+            .push(ShaderDefVal::Bool("CHUNK_RENDER_PASS".into(), true));
         Ok(desc)
     }
 }

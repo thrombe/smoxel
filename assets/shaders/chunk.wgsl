@@ -18,7 +18,17 @@ struct WorldDataUniforms {
 }
 
 @group(3) @binding(0) var<uniform> world_data: WorldDataUniforms;
+@group(3) @binding(1) var transient_world_textre: texture_3d<u32>;
 @group(3) @binding(2) var depth_texture: texture_2d<f32>;
+
+struct BitWorldUniforms {
+    chunk_side: u32,
+    world_side: u32,
+    pos: vec3<f32>,
+}
+@group(3) @binding(3) var<uniform> bit_world_uniforms: BitWorldUniforms;
+@group(3) @binding(4) var<storage> bit_world_chunk_buffer: array<vec2<u32>>;
+@group(3) @binding(5) var<storage> bit_world_chunk_indices: array<u32>;
 
 // returns voxel material in the rightmost byte
 fn get_voxel(pos: vec3<f32>) -> u32 {

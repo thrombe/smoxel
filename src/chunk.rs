@@ -34,7 +34,8 @@ impl Plugin for VoxelPlugin {
                 // resolve_chunk_tasks,
                 // test_dynamic_mip,
             ),
-        );
+        )
+        .add_event::<ChunkOctreeModified>();
     }
 }
 
@@ -132,16 +133,19 @@ pub struct ChunkFetchInfo<'a> {
     chunk_entity: &'a mut Entity,
 }
 
+#[derive(Component, Event)]
+pub struct ChunkOctreeModified;
+
 #[derive(Component, Clone, Debug)]
 pub struct ChunkOctree {
-    root: ChunkOctreeNode,
-    height: u32,       // 2.pow(height) number of voxels on edges
-    chunk_height: u32, // in log2 (-size, size)
+    pub root: ChunkOctreeNode,
+    pub height: u32,       // 2.pow(height) number of voxels on edges
+    pub chunk_height: u32, // in log2 (-size, size)
 
-    voxel_physical_size: f32,
-    cube_handle: Handle<Mesh>,
-    materials: Handle<Image>,
-    entity: Entity,
+    pub voxel_physical_size: f32,
+    pub cube_handle: Handle<Mesh>,
+    pub materials: Handle<Image>,
+    pub entity: Entity,
 }
 impl ChunkOctree {
     pub fn new(
@@ -170,6 +174,14 @@ impl ChunkOctree {
             self.root
                 .set_voxel(pos, voxel, self.height, self.chunk_height),
         )
+    }
+
+    pub fn bit_world(&self) -> BitWorld {
+        let mut bw = BitWorld::new();
+
+        self.root.insert_to_bit_world(&mut bw, IVec3::ZERO);
+
+        bw
     }
 
     pub fn update_mip(&mut self) {
@@ -268,6 +280,37 @@ impl ChunkOctreeNode {
             Self::Chunk { voxels } => voxels,
         }
     }
+
+    pub fn insert_to_bit_world(&self, bw: &mut BitWorld, chunk_pos: IVec3) {
+        match self {
+            ChunkOctreeNode::Node { chunks, mip } => {
+                chunks
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, c)| c.as_ref().map(|c| (i, c)))
+                    .for_each(|(i, c)| {
+                        let mut ipos = chunk_pos * 2;
+                        let mut offset = IVec3::ONE;
+                        if i & 0b001 == 0 {
+                            offset.x = 0;
+                        }
+                        if i & 0b010 == 0 {
+                            offset.y = 0;
+                        }
+                        if i & 0b100 == 0 {
+                            offset.z = 0;
+                        }
+                        ipos += offset;
+
+                        c.insert_to_bit_world(bw, ipos);
+                    });
+            }
+            ChunkOctreeNode::Chunk { voxels } => {
+                bw.insert(&voxels.mip1, chunk_pos.as_uvec3());
+            }
+        }
+    }
+
     fn despawn_rec(&mut self, commands: &mut Commands) {
         match self {
             Self::Node { chunks, mip } => {
@@ -1057,6 +1100,53 @@ where
             }
         }
         MipChunk { voxels: mip, side }
+    }
+}
+
+pub struct BitWorld {
+    // TODO: an offset for sliding window chunk view
+    // chunk_offset: UVec2,
+    // 2^5 cubed for now
+    // index into 'data' where a chunk starts
+    pub chunk_indices: Vec<u32>,
+
+    // voxels at the highest mip level
+    pub chunk_side: usize,
+    pub chunk_buffer: Vec<UVec2>,
+}
+impl BitWorld {
+    pub fn new() -> Self {
+        let chunk_indices = vec![0; 2usize.pow(5).pow(3)];
+        Self {
+            chunk_buffer: TChunk::mip_from_slice(&chunk_indices, 2usize.pow(5)).voxels,
+            chunk_indices,
+            chunk_side: 128,
+            // chunk_buffer: vec![UVec2::ZERO], // '0' as index is not allowed in 'chunk_indices'
+        }
+    }
+
+    pub fn insert(&mut self, mip: &MipChunk, pos: UVec3) {
+        let side = 2u32.pow(5);
+        self.insert_at_index(mip, pos.z * side.pow(2) + pos.y * side + pos.x);
+    }
+
+    pub fn insert_at_index(&mut self, mip: &MipChunk, index: u32) {
+        self.chunk_indices[index as usize] = self.chunk_buffer.len() as _;
+        self.chunk_buffer.extend_from_slice(&mip.voxels);
+    }
+
+    pub fn overwrite_chunk_at_index(&mut self, mip: &MipChunk, index: u32) {
+        let i = self.chunk_indices[index as usize];
+        self.chunk_buffer[i as usize..i as usize + mip.voxels.len()].copy_from_slice(&mip.voxels);
+    }
+
+    pub fn mip(&self) -> MipChunk {
+        TChunk::mip_from_slice(&self.chunk_indices, 2usize.pow(5))
+    }
+
+    pub fn update_mip(&mut self) {
+        let tc = self.mip();
+        self.overwrite_chunk_at_index(&tc, 0);
     }
 }
 

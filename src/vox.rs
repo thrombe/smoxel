@@ -4,7 +4,7 @@ use bevy::{
 };
 use dot_vox::{DotVoxData, Model, SceneNode};
 
-use crate::chunk::{ChunkHandle, ChunkMaterial, ChunkOctree, TiledChunker};
+use crate::chunk::{ChunkHandle, ChunkMaterial, ChunkOctree, TiledChunker, ChunkOctreeModified};
 
 #[derive(Component, Clone, Copy)]
 pub struct VoxChunk;
@@ -69,6 +69,7 @@ fn on_vox_asset_event(
     mut chunk_materials: ResMut<Assets<ChunkMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut std_materials: ResMut<Assets<StandardMaterial>>,
+    mut come: EventWriter<ChunkOctreeModified>,
 ) {
     for event in events.read() {
         let AssetEvent::LoadedWithDependencies { id } = event else {
@@ -83,6 +84,7 @@ fn on_vox_asset_event(
             &mut meshes,
             &mut std_materials,
             &data.0,
+            &mut come
         );
     }
 }
@@ -294,6 +296,7 @@ fn load_vox(
     meshes: &mut Assets<Mesh>,
     std_materials: &mut Assets<StandardMaterial>,
     data: &DotVoxData,
+    come: &mut EventWriter<ChunkOctreeModified>,
 ) {
     let vox_scene_entity = commands
         .spawn((
@@ -311,21 +314,22 @@ fn load_vox(
     };
     parser.parse(0, IVec3::default(), Quat::default(), Vec3::ZERO);
 
-    // let mut svo = parser.svo(7, vox_scene_entity, images, meshes);
-    // svo.spawn_chunks(commands, images, chunk_materials);
-    // commands.entity(vox_scene_entity).insert(svo);
+    let mut svo = parser.svo(7, vox_scene_entity, images, meshes);
+    svo.spawn_chunks(commands, images, chunk_materials);
+    commands.entity(vox_scene_entity).insert(svo);
+    come.send(ChunkOctreeModified);
 
-    let material_handle = images.add(ChunkHandle::material_image(parser.get_materials()));
-    let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
-    let tc = parser.tiled_chunker(128);
-    tc.spawn_chunks(
-        vox_scene_entity,
-        commands,
-        images,
-        chunk_materials,
-        1.0 / 16.0,
-        &material_handle,
-        &cube_handle,
-        IVec3::ZERO,
-    );
+    // let material_handle = images.add(ChunkHandle::material_image(parser.get_materials()));
+    // let cube_handle = meshes.add(Mesh::from(shape::Cube { size: 2.0 }));
+    // let tc = parser.tiled_chunker(128);
+    // tc.spawn_chunks(
+    //     vox_scene_entity,
+    //     commands,
+    //     images,
+    //     chunk_materials,
+    //     1.0 / 16.0,
+    //     &material_handle,
+    //     &cube_handle,
+    //     IVec3::ZERO,
+    // );
 }
