@@ -245,7 +245,9 @@ fn fragment(mesh: VertexOutput) -> Output {
             // res = inline_no_mip_loop(o, ray_dir, step, dt);
             // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             // res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
-            res = trace_while(o, ray_dir, stepi, dt, t / voxel_size);
+            // res = trace_while(o, ray_dir, stepi, dt, t / voxel_size);
+            // res = trace_while2(o, ray_dir, stepi, dt, t / voxel_size);
+            res = trace_while3(o, ray_dir, stepi, dt, t / voxel_size);
             // res = bitworld_trace(ray_pos, ray_dir, step, dt);
         }
     #endif
@@ -315,7 +317,8 @@ struct Ray {
     // mip: u32,
     // index: u32,
     max_index: i32,
-    stack: array<RayMarch, 10>,
+
+    s: array<RayMarch, 6>,
 }
 
 fn trace_while(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
@@ -338,24 +341,12 @@ fn trace_while(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray
     rm.march -= rm.modk;
     var index = r.max_index;
 
-    // if any(rm.march != vec3(0)) {
-    //     res.hit = true;
-    //     res.color = vec4(0.0, 1.0, 0.0, 1.0);
-    //     return res;
-    // }
-
     let too_deep = 500;
     // while index >= 0 && index <= r.max_index {
     for (var i=0; i<too_deep && index >= 0 && index <= r.max_index; i += 1) {
-        // if i == too_deep - 1 {
-        //     res.hit = true;
-        //     res.color = vec4(1.0, 0.0, 1.0, 1.0);
-        //     return res;
-        // }
         if any((rm.modk & rm.outmask) != 0) {
-        // if any(rm.modk >= i32(side)/32 || rm.modk < 0) {
             index += 1;
-            rm = r.stack[index];
+            rm = r.s[index];
 
             let mask = vec3<i32>(rm.t.xyz <= min(rm.t.yzx, rm.t.zxy));
             rm.last_t = min(rm.t.x, min(rm.t.y, rm.t.z));
@@ -395,7 +386,7 @@ fn trace_while(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray
             //     return res;
             // }
 
-            r.stack[index] = rm;
+            r.s[index] = rm;
             index -= 1;
 
             rm.o += r.dir * rm.last_t;
@@ -435,10 +426,287 @@ fn trace_while(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray
     }
 
     if index == -1 {
-        rm = r.stack[0];
+        rm = r.s[0];
         res.hit = true;
         res.t = rm.last_t;
         let voxel = textureLoad(voxels, rm.march + rm.modk, 0).x;
+        res.color = get_color(voxel);
+    }
+    return res;
+}
+
+fn trace_while2(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
+    var res = MipResult();
+    var r = Ray();
+    r.dir = dir;
+    r.dt = dt;
+    r.step = step;
+    r.max_index = 2;
+    r.max_index = 5;
+    var i = r.max_index;
+    let k = i32(1u << u32(r.max_index));
+    r.s[i].o = o/f32(k);
+    r.s[i].outmask = !(i32(side)/k - 1);
+    r.s[i].march = vec3<i32>(r.s[i].o);
+    r.s[i].march = max(vec3(0), r.s[i].march);
+    r.s[i].march = min(vec3(i32(side - 1u)/k), r.s[i].march);
+    r.s[i].t = (vec3<f32>(r.step) * (0.5 - (r.s[i].o - vec3<f32>(r.s[i].march))) + 0.5) * r.dt;
+    r.s[i].modk = r.s[i].march & !r.s[i].outmask; // &!outmask or &(r.s[i].k - 1) or %r.s[i].k
+    r.s[i].march -= r.s[i].modk;
+
+    let too_deep = 500;
+    // while index >= 0 && index <= r.max_index {
+    for (var j=0; j<too_deep && i >= 0 && i <= r.max_index; j += 1) {
+        if any((r.s[i].modk & r.s[i].outmask) != 0) {
+            i += 1;
+
+            let mask = vec3<i32>(r.s[i].t.xyz <= min(r.s[i].t.yzx, r.s[i].t.zxy));
+            r.s[i].last_t = min(r.s[i].t.x, min(r.s[i].t.y, r.s[i].t.z));
+            r.s[i].t += vec3<f32>(mask) * r.dt;
+            r.s[i].modk += mask * r.step;
+            continue;
+        }
+        var mip = vec2<u32>();
+        switch i {
+            case 0, 3: {
+                let m = vec3<u32>(r.s[i].modk > 0) << vec3(0u, 1u, 2u);
+                let mipi = m.x | m.y | m.z;
+                mip = vec2(getMipBit(r.s[i].data.x, mipi), 0u);
+            }
+            case 1, 4: {
+                let m = vec3<u32>(r.s[i].modk > 0) << vec3(0u, 1u, 2u);
+                let mipi = m.x | m.y | m.z;
+                mip = vec2(getMipByte(r.s[i].data, mipi), 0u);
+            }
+            case 2: {
+                mip = textureLoad(voxels_mip1, r.s[i].march + r.s[i].modk, 0).xy;
+            }
+            case 5: {
+                mip = textureLoad(voxels_mip2, r.s[i].march + r.s[i].modk, 0).xy;
+            }
+            default: {
+                break;
+            }
+        }
+        if any(mip > 0u) {
+            // if i == 6 {
+            //     res.hit = true;
+            //     res.color = vec4(vec3<f32>(r.s[i].march + r.s[i].modk)/(10.0 * f32(6 - i)), 1.0);
+            //     // res.color = vec4(1.0/vec3(r.s[i].last_t * f32(1 << u32(i)) + ray_t)/0000.003, 1.0);
+            //     // res.color = vec4(o/200.0, 1.0);
+            //     // res.color = vec4(vec3(r.s[i].last_t/10.0), 1.0);
+            //     return res;
+            // }
+
+            i -= 1;
+
+            r.s[i] = r.s[i+1];
+            r.s[i].o += r.dir * r.s[i].last_t;
+            r.s[i].o *= 2.0;
+            r.s[i].last_t = 0.0;
+            let min_bound = (r.s[i].march + r.s[i].modk) * 2;
+            r.s[i].march = vec3<i32>(r.s[i].o);
+            r.s[i].march = min(min_bound + 1, r.s[i].march);
+            r.s[i].march = max(min_bound, r.s[i].march);
+            r.s[i].t = (vec3<f32>(r.step) * (0.5 - (r.s[i].o - vec3<f32>(r.s[i].march))) + 0.5) * r.dt;
+
+            switch i | i32(r.max_index == 5) * 32 {
+                case -1: {break;}
+                case 0, 1, 32, 33, 34, 35, 36: {
+                    r.s[i].outmask = !(2 - 1);
+                }
+                case 2: {
+                    r.s[i].outmask = !(i32(side)/4 - 1);
+                }
+                case 37 {
+                    r.s[i].outmask = !(i32(side)/32 - 1);
+                }
+                default: {
+                    break;
+                }
+            }
+
+            r.s[i].modk = r.s[i].march & !r.s[i].outmask; // &!outmask or &(r.s[i].k - 1) or %r.s[i].k
+            r.s[i].march -= r.s[i].modk;
+            r.s[i].data = mip;
+            continue;
+        }
+        let mask = vec3<i32>(r.s[i].t.xyz <= min(r.s[i].t.yzx, r.s[i].t.zxy));
+        r.s[i].last_t = min(r.s[i].t.x, min(r.s[i].t.y, r.s[i].t.z));
+        r.s[i].t += vec3<f32>(mask) * r.dt;
+        r.s[i].modk += mask * r.step;
+    }
+
+    if i == -1 {
+        res.hit = true;
+        res.t = r.s[0].last_t;
+        let voxel = textureLoad(voxels, r.s[0].march + r.s[0].modk, 0).x;
+        res.color = get_color(voxel);
+    }
+    return res;
+}
+
+fn trace_while3(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
+    var res = MipResult();
+    var r = Ray();
+    r.dir = dir;
+    r.dt = dt;
+    r.step = step;
+    r.max_index = 2;
+    r.max_index = 5;
+    let k = i32(1u << u32(r.max_index));
+    var rm = RayMarch();
+    var rm0 = RayMarch();
+    var rm1 = RayMarch();
+    var rm2 = RayMarch();
+    var rm3 = RayMarch();
+    var rm4 = RayMarch();
+    var rm5 = RayMarch();
+    rm.o = o/f32(k);
+    rm.outmask = !(i32(side)/k - 1);
+    rm.march = vec3<i32>(rm.o);
+    rm.march = max(vec3(0), rm.march);
+    rm.march = min(vec3(i32(side - 1u)/k), rm.march);
+    rm.t = (vec3<f32>(r.step) * (0.5 - (rm.o - vec3<f32>(rm.march))) + 0.5) * r.dt;
+    rm.modk = rm.march & !rm.outmask; // &!outmask or &(rm.k - 1) or %rm.k
+    rm.march -= rm.modk;
+    var index = r.max_index;
+
+    let too_deep = 500;
+    // while index >= 0 && index <= r.max_index {
+    for (var i=0; i<too_deep && index >= 0 && index <= r.max_index; i += 1) {
+        if any((rm.modk & rm.outmask) != 0) {
+        // if any(rm.modk >= i32(side)/32 || rm.modk < 0) {
+            index += 1;
+            switch index {
+                case 0: {
+                    rm = rm0;
+                }
+                case 1: {
+                    rm = rm1;
+                }
+                case 2: {
+                    rm = rm2;
+                }
+                case 3: {
+                    rm = rm3;
+                }
+                case 4: {
+                    rm = rm4;
+                }
+                case 5: {
+                    rm = rm5;
+                }
+                default: {
+                    break;
+                }
+            }
+            // rm = r.s[index];
+
+            let mask = vec3<i32>(rm.t.xyz <= min(rm.t.yzx, rm.t.zxy));
+            rm.last_t = min(rm.t.x, min(rm.t.y, rm.t.z));
+            rm.t += vec3<f32>(mask) * r.dt;
+            rm.modk += mask * r.step;
+            continue;
+        }
+        var mip = vec2<u32>();
+        switch index {
+            case 0, 3: {
+                let m = vec3<u32>(rm.modk > 0) << vec3(0u, 1u, 2u);
+                let mipi = m.x | m.y | m.z;
+                mip = vec2(getMipBit(rm.data.x, mipi), 0u);
+            }
+            case 1, 4: {
+                let m = vec3<u32>(rm.modk > 0) << vec3(0u, 1u, 2u);
+                let mipi = m.x | m.y | m.z;
+                mip = vec2(getMipByte(rm.data, mipi), 0u);
+            }
+            case 2: {
+                mip = textureLoad(voxels_mip1, rm.march + rm.modk, 0).xy;
+            }
+            case 5: {
+                mip = textureLoad(voxels_mip2, rm.march + rm.modk, 0).xy;
+            }
+            default: {
+                break;
+            }
+        }
+        if any(mip > 0u) {
+            // if index == 6 {
+            //     res.hit = true;
+            //     res.color = vec4(vec3<f32>(rm.march + rm.modk)/(10.0 * f32(6 - index)), 1.0);
+            //     // res.color = vec4(1.0/vec3(rm.last_t * f32(1 << u32(index)) + ray_t)/0000.003, 1.0);
+            //     // res.color = vec4(o/200.0, 1.0);
+            //     // res.color = vec4(vec3(rm.last_t/10.0), 1.0);
+            //     return res;
+            // }
+
+            switch index {
+                case 0: {
+                    rm0 = rm;
+                }
+                case 1: {
+                    rm1 = rm;
+                }
+                case 2: {
+                    rm2 = rm;
+                }
+                case 3: {
+                    rm3 = rm;
+                }
+                case 4: {
+                    rm4 = rm;
+                }
+                case 5: {
+                    rm5 = rm;
+                }
+                default: {
+                    break;
+                }
+            }
+            // r.s[index] = rm;
+            index -= 1;
+
+            rm.o += r.dir * rm.last_t;
+            rm.o *= 2.0;
+            rm.last_t = 0.0;
+            let min_bound = (rm.march + rm.modk) * 2;
+            rm.march = vec3<i32>(rm.o);
+            rm.march = min(min_bound + 1, rm.march);
+            rm.march = max(min_bound, rm.march);
+            rm.t = (vec3<f32>(r.step) * (0.5 - (rm.o - vec3<f32>(rm.march))) + 0.5) * r.dt;
+
+            switch index | i32(r.max_index == 5) * 32 {
+                case -1: {break;}
+                case 0, 1, 32, 33, 34, 35, 36: {
+                    rm.outmask = !(2 - 1);
+                }
+                case 2: {
+                    rm.outmask = !(i32(side)/4 - 1);
+                }
+                case 37 {
+                    rm.outmask = !(i32(side)/32 - 1);
+                }
+                default: {
+                    break;
+                }
+            }
+
+            rm.modk = rm.march & !rm.outmask; // &!outmask or &(rm.k - 1) or %rm.k
+            rm.march -= rm.modk;
+            rm.data = mip;
+            continue;
+        }
+        let mask = vec3<i32>(rm.t.xyz <= min(rm.t.yzx, rm.t.zxy));
+        rm.last_t = min(rm.t.x, min(rm.t.y, rm.t.z));
+        rm.t += vec3<f32>(mask) * r.dt;
+        rm.modk += mask * r.step;
+    }
+
+    if index == -1 {
+        res.hit = true;
+        res.t = rm0.last_t;
+        let voxel = textureLoad(voxels, rm0.march + rm0.modk, 0).x;
         res.color = get_color(voxel);
     }
     return res;
