@@ -51,7 +51,7 @@ fn unpackBytes(t: u32) -> vec4<u32> {
 }
 
 fn getMipByte(mip: vec2<u32>, index: u32) -> u32 {
-    return (mip[index >> 2u] >> 8u * (index & 3u)) & 255u;
+    return (mip[index >> 2u] >> (8u * (index & 3u))) & 255u;
 }
 fn getMipBit(mip: u32, index: u32) -> u32 {
     return mip & (1u << index);
@@ -93,8 +93,8 @@ struct Output {
     #endif
 }
 
-// const enable_depth_prepass: bool = true;
-const enable_depth_prepass: bool = false;
+const enable_depth_prepass: bool = true;
+// const enable_depth_prepass: bool = false;
 
 // https://www.shadertoy.com/view/4dX3zl
 // http://www.cse.yorku.ca/~amana/research/grid.pdf
@@ -201,20 +201,21 @@ fn fragment(mesh: VertexOutput) -> Output {
     var step = vec3<f32>(stepi);
     var res: MipResult;
     #ifdef CHUNK_DEPTH_PREPASS
-        res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
-        // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+        // res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+        res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
     #else
         if enable_depth_prepass {
             res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             // res = inline_no_mip_loop(o, ray_dir, step, dt);
             // res = bitworld_trace(ray_pos, ray_dir, step, dt);
+            // res = trace_while(o, ray_dir, stepi, dt, t / voxel_size);
         } else {
             // res = inline_no_mip_loop(o, ray_dir, step, dt);
-            // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+            res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             // res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
             // res = trace_while(o, ray_dir, stepi, dt, t / voxel_size);
             // res = trace_while2(o, ray_dir, stepi, dt, t / voxel_size);
-            res = trace_while3(o, ray_dir, stepi, dt, t / voxel_size);
+            // res = trace_while3(o, ray_dir, stepi, dt, t / voxel_size);
             // res = bitworld_trace(ray_pos, ray_dir, step, dt);
         }
     #endif
