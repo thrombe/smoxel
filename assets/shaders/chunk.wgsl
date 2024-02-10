@@ -46,49 +46,15 @@ fn get_color(index: u32) -> vec4<f32> {
     return textureLoad(materials, index, 0);
 }
 
-
 fn unpackBytes(t: u32) -> vec4<u32> {
     return (t >> vec4<u32>(0u, 8u, 16u, 24u)) & 15u;
 }
 
 fn getMipByte(mip: vec2<u32>, index: u32) -> u32 {
-    return mip[index >> 2u] & (255u << 8u * (index & 3u));
-    // var component = 0u;
-    // switch (index) {
-    //     case 0u {
-    //         component = mip.x & 255u;
-    //     }
-    //     case 1u {
-    //         component = mip.x & (255u << 8u);
-    //     }
-    //     case 2u {
-    //         component = mip.x & (255u << 16u);
-    //     }
-    //     case 3u {
-    //         component = mip.x & (255u << 24u);
-    //     }
-    //     case 4u {
-    //         component = mip.y & 255u;
-    //     }
-    //     case 5u {
-    //         component = mip.y & (255u << 8u);
-    //     }
-    //     case 6u {
-    //         component = mip.y & (255u << 16u);
-    //     }
-    //     case 7u {
-    //         component = mip.y & (255u << 24u);
-    //     }
-    //     default: {
-    //         // discard;
-    //     }
-    // }
-    // return component;
+    return (mip[index >> 2u] >> 8u * (index & 3u)) & 255u;
 }
 fn getMipBit(mip: u32, index: u32) -> u32 {
-    var mask = 1u << index;
-    mask = mask | mask << 8u | mask << 16u | mask << 24u;
-    return mip & mask;
+    return mip & (1u << index);
 }
 
 fn get_prepass_depth(uv: vec2<f32>) -> f32 {
