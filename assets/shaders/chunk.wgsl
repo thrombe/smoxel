@@ -170,9 +170,12 @@ fn fragment(mesh: VertexOutput) -> Output {
             return out;
         }
     #else
-        let depth_t = get_prepass_depth(screen_uv);
-        if length(backface_hit_pos - ray_origin) < depth_t {
-            discard;
+        var depth_t = 0.0;
+        if enable_depth_prepass {
+            depth_t = get_prepass_depth(screen_uv);
+            if length(backface_hit_pos - ray_origin) < depth_t {
+                discard;
+            }
         }
     #endif
 
