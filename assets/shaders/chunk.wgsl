@@ -126,8 +126,8 @@ struct Output {
     #endif
 }
 
-const enable_depth_prepass: bool = true;
-// const enable_depth_prepass: bool = false;
+// const enable_depth_prepass: bool = true;
+const enable_depth_prepass: bool = false;
 
 // https://www.shadertoy.com/view/4dX3zl
 // http://www.cse.yorku.ca/~amana/research/grid.pdf
@@ -241,7 +241,8 @@ fn fragment(mesh: VertexOutput) -> Output {
         } else {
             // res = inline_no_mip_loop(o, ray_dir, step, dt);
             // res = mip2_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
-            res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+            // res = mip5_loop_final(o, ray_dir, step, stepi, dt, t / voxel_size);
+            res = trace_while(o, ray_dir, stepi, dt, t / voxel_size);
             // res = bitworld_trace(ray_pos, ray_dir, step, dt);
         }
     #endif
@@ -257,14 +258,14 @@ fn fragment(mesh: VertexOutput) -> Output {
 
     if res.hit {
         #ifdef CHUNK_RENDER_PASS
-            let dir = normalize(vec3(1.0, 1.0, 1.0));
-            let pos = ray_origin + ray_dir * res.t * 1.0 + dir * 1.0;
-            // out.color = vec4(pos/200.0, 1.0);
-            // out.color = vec4(vec3(res.t/300.0), 1.0);
-            var sun_res = bitworld_trace(pos, dir, step, dt);
-            if sun_res.hit {
-                out.color *= 0.5;
-            }
+            // let dir = normalize(vec3(1.0, 1.0, 1.0));
+            // let pos = ray_origin + ray_dir * res.t * 1.0 + dir * 1.0;
+            // // out.color = vec4(pos/200.0, 1.0);
+            // // out.color = vec4(vec3(res.t/300.0), 1.0);
+            // var sun_res = bitworld_trace(pos, dir, step, dt);
+            // if sun_res.hit {
+            //     out.color *= 0.5;
+            // }
         #endif
         return out;
     }
@@ -276,6 +277,168 @@ fn fragment(mesh: VertexOutput) -> Output {
     #else
         discard;
     #endif
+}
+
+// given that side is 2^_ and k is 2^_
+// k
+//  - final 5
+//    - 2 for 0, 1, 2, 3, 4
+//    - side / 32
+//  - final 2
+//    - 2 for 0, 1
+//    - side / 4
+// outmask
+//  - final 5
+//    - !1 for 0, 1, 2, 3, 4
+//    - !(side/32 - 1) for 5
+//  - final 2
+//    - !1 for 0, 1
+//    - !(side/4 - 1) for 2
+struct RayMarch {
+    o: vec3<f32>,
+    march: vec3<i32>,
+    modk: vec3<i32>,
+    t: vec3<f32>,
+    data: vec2<u32>,
+    outmask: i32,
+    // k: i32,
+    last_t: f32,
+}
+struct Ray {
+    // origin: vec3<f32>,
+    dir: vec3<f32>,
+    dt: vec3<f32>,
+    step: vec3<i32>,
+    // mip: u32,
+    // index: u32,
+    max_index: i32,
+    stack: array<RayMarch, 10>,
+}
+
+fn trace_while(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray_t: f32) -> MipResult {
+    var res = MipResult();
+    var r = Ray();
+    r.dir = dir;
+    r.dt = dt;
+    r.step = step;
+    r.max_index = 2;
+    r.max_index = 5;
+    let k = i32(1u << u32(r.max_index));
+    var rm = RayMarch();
+    rm.o = o/f32(k);
+    rm.outmask = !(i32(side)/k - 1);
+    rm.march = vec3<i32>(rm.o);
+    rm.march = max(vec3(0), rm.march);
+    rm.march = min(vec3(i32(side - 1u)/k), rm.march);
+    rm.t = (vec3<f32>(r.step) * (0.5 - (rm.o - vec3<f32>(rm.march))) + 0.5) * r.dt;
+    rm.modk = rm.march & !rm.outmask; // &!outmask or &(rm.k - 1) or %rm.k
+    rm.march -= rm.modk;
+    var index = r.max_index;
+
+    // if any(rm.march != vec3(0)) {
+    //     res.hit = true;
+    //     res.color = vec4(0.0, 1.0, 0.0, 1.0);
+    //     return res;
+    // }
+
+    let too_deep = 500;
+    // while index >= 0 && index <= r.max_index {
+    for (var i=0; i<too_deep && index >= 0 && index <= r.max_index; i += 1) {
+        // if i == too_deep - 1 {
+        //     res.hit = true;
+        //     res.color = vec4(1.0, 0.0, 1.0, 1.0);
+        //     return res;
+        // }
+        if any((rm.modk & rm.outmask) != 0) {
+        // if any(rm.modk >= i32(side)/32 || rm.modk < 0) {
+            index += 1;
+            rm = r.stack[index];
+
+            let mask = vec3<i32>(rm.t.xyz <= min(rm.t.yzx, rm.t.zxy));
+            rm.last_t = min(rm.t.x, min(rm.t.y, rm.t.z));
+            rm.t += vec3<f32>(mask) * r.dt;
+            rm.modk += mask * r.step;
+            continue;
+        }
+        var mip = vec2<u32>();
+        switch index {
+            case 0, 3: {
+                let m = vec3<u32>(rm.modk > 0) << vec3(0u, 1u, 2u);
+                let mipi = m.x | m.y | m.z;
+                mip = vec2(getMipBit(rm.data.x, mipi), 0u);
+            }
+            case 1, 4: {
+                let m = vec3<u32>(rm.modk > 0) << vec3(0u, 1u, 2u);
+                let mipi = m.x | m.y | m.z;
+                mip = vec2(getMipByte(rm.data, mipi), 0u);
+            }
+            case 2: {
+                mip = textureLoad(voxels_mip1, rm.march + rm.modk, 0).xy;
+            }
+            case 5: {
+                mip = textureLoad(voxels_mip2, rm.march + rm.modk, 0).xy;
+            }
+            default: {
+                break;
+            }
+        }
+        if any(mip > 0u) {
+            // if index == 6 {
+            //     res.hit = true;
+            //     res.color = vec4(vec3<f32>(rm.march + rm.modk)/(10.0 * f32(6 - index)), 1.0);
+            //     // res.color = vec4(1.0/vec3(rm.last_t * f32(1 << u32(index)) + ray_t)/0000.003, 1.0);
+            //     // res.color = vec4(o/200.0, 1.0);
+            //     // res.color = vec4(vec3(rm.last_t/10.0), 1.0);
+            //     return res;
+            // }
+
+            r.stack[index] = rm;
+            index -= 1;
+
+            rm.o += r.dir * rm.last_t;
+            rm.o *= 2.0;
+            rm.last_t = 0.0;
+            let min_bound = (rm.march + rm.modk) * 2;
+            rm.march = vec3<i32>(rm.o);
+            rm.march = min(min_bound + 1, rm.march);
+            rm.march = max(min_bound, rm.march);
+            rm.t = (vec3<f32>(r.step) * (0.5 - (rm.o - vec3<f32>(rm.march))) + 0.5) * r.dt;
+
+            switch index | i32(r.max_index == 5) * 32 {
+                case -1: {break;}
+                case 0, 1, 32, 33, 34, 35, 36: {
+                    rm.outmask = !(2 - 1);
+                }
+                case 2: {
+                    rm.outmask = !(i32(side)/4 - 1);
+                }
+                case 37 {
+                    rm.outmask = !(i32(side)/32 - 1);
+                }
+                default: {
+                    break;
+                }
+            }
+
+            rm.modk = rm.march & !rm.outmask; // &!outmask or &(rm.k - 1) or %rm.k
+            rm.march -= rm.modk;
+            rm.data = mip;
+            continue;
+        }
+        let mask = vec3<i32>(rm.t.xyz <= min(rm.t.yzx, rm.t.zxy));
+        rm.last_t = min(rm.t.x, min(rm.t.y, rm.t.z));
+        rm.t += vec3<f32>(mask) * r.dt;
+        rm.modk += mask * r.step;
+    }
+
+    if index == -1 {
+        rm = r.stack[0];
+        res.hit = true;
+        res.t = rm.last_t;
+        let voxel = textureLoad(voxels, rm.march + rm.modk, 0).x;
+        res.color = get_color(voxel);
+    }
+    return res;
 }
 
 fn bitworld_trace(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, dt: vec3<f32>) -> MipResult {
