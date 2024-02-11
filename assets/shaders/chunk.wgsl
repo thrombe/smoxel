@@ -34,6 +34,11 @@ fn get_color(index: u32) -> vec4<f32> {
     return textureLoad(materials, index, 0);
 }
 
+fn get_mip_index(pos: vec3<i32>) -> u32 {
+    let m = vec3<u32>(pos > 0) << vec3(0u, 1u, 2u);
+    return m.x | m.y | m.z;
+}
+
 fn get_mip_byte(mip: vec2<u32>, index: u32) -> u32 {
     return (mip[index >> 2u] >> (8u * (index & 3u))) & 255u;
 }
@@ -305,14 +310,10 @@ fn trace_while(o: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<f32>, ray
         var mip = vec2<u32>();
         switch index {
             case 0, 3: {
-                let m = vec3<u32>(rm.modk > 0) << vec3(0u, 1u, 2u);
-                let mipi = m.x | m.y | m.z;
-                mip = vec2(get_mip_bit(rm.data.x, mipi), 0u);
+                mip = vec2(get_mip_bit(rm.data.x, get_mip_index(rm.modk)), 0u);
             }
             case 1, 4: {
-                let m = vec3<u32>(rm.modk > 0) << vec3(0u, 1u, 2u);
-                let mipi = m.x | m.y | m.z;
-                mip = vec2(get_mip_byte(rm.data, mipi), 0u);
+                mip = vec2(get_mip_byte(rm.data, get_mip_index(rm.modk)), 0u);
             }
             case 2: {
                 let m = (rm.march + rm.modk) * pos_to_index;
@@ -516,9 +517,7 @@ fn mip4_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
         if any((modk & outmask2) != 0) {
             break;
         }
-        let m = vec3<u32>(modk > 0) << vec3(0u, 1u, 2u);
-        let index = m.x | m.y | m.z;
-        let comp = get_mip_byte(mip, index);
+        let comp = get_mip_byte(mip, get_mip_index(modk));
         if (comp > 0u) {
             res = mip3_loop(_o * 2.0, ray_dir, step, stepi, dt, (_last_t + last_t) * 2.0, comp, ray_t, (marchi + modk) * 2);
             if res.hit {
@@ -550,9 +549,7 @@ fn mip3_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
         if any((modk & outmask2) != 0) {
             break;
         }
-        let m = vec3<u32>(modk > 0) << vec3(0u, 1u, 2u);
-        let index = m.x | m.y | m.z;
-        let voxel = get_mip_bit(comp, index);
+        let voxel = get_mip_bit(comp, get_mip_index(modk));
         if voxel > 0u {
             let res = mip2_loop(_o * 2.0, ray_dir, step, stepi, dt, (_last_t + last_t) * 2.0, ray_t, (marchi + modk) * 2);
             if res.hit {
@@ -682,9 +679,7 @@ fn mip1_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
         if any((modk & outmask2) != 0) {
             break;
         }
-        let m = vec3<u32>(modk > 0) << vec3(0u, 1u, 2u);
-        let index = m.x | m.y | m.z;
-        let comp = get_mip_byte(mip, index);
+        let comp = get_mip_byte(mip, get_mip_index(modk));
         if (comp > 0u) {
             res = mip0_loop(_o * 2.0, ray_dir, step, stepi, dt, (_last_t + last_t) * 2.0, comp, ray_t, (marchi + modk) * 2);
             if res.hit {
@@ -724,9 +719,7 @@ fn mip0_loop(_o: vec3<f32>, ray_dir: vec3<f32>, step: vec3<f32>, stepi: vec3<i32
         if any((modk & outmask2) != 0) {
             break;
         }
-        let m = vec3<u32>(modk > 0) << vec3(0u, 1u, 2u);
-        let index = m.x | m.y | m.z;
-        let voxel = get_mip_bit(comp, index);
+        let voxel = get_mip_bit(comp, get_mip_index(modk));
         if voxel > 0u {
             res.hit = true;
             res.t = ray_t + _last_t + last_t;
