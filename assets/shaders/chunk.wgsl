@@ -274,7 +274,6 @@ fn trace_while(ray_origin: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<
     // ray wrt world center
     o += f32(wsq * 2 * cs);
     // world goes from 0 to world_size / 4 (mip 4x4x4)
-    // o /= f32(wsq * cs);
     o /= f32(cs * 4);
 
     let min_bound = vec3(0);
@@ -284,18 +283,6 @@ fn trace_while(ray_origin: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<
     let pos_to_voxel_index = vec3(1, csq, csq*csq);
 
     var res = MipResult();
-    // if true {
-    //     res.hit = true;
-    //     // let m = vec3<i32>(o * 4.0);
-    //     // let i = m.z * ws * ws + m.y * ws + m.x;
-    //     // let chunk = bit_world_chunk_indices[i];
-    //     // res.color = vec4(f32(chunk > 0u));
-
-    //     let m = vec3<i32>(o * 1.0) * vec3(1, wsq, wsq*wsq);
-    //     let i = m.z + m.y + m.x;
-    //     res.color = vec4(f32(any(bit_world_chunk_buffer[i] > 0u)));
-    //     return res;
-    // }
     var r = Ray();
     r.dir = dir;
     r.dt = dt;
@@ -317,11 +304,6 @@ fn trace_while(ray_origin: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<
     let mip2_outmask = !(csq - 1);
     // while index >= 0 && index <= r.max_index {
     for (var i=0; i<too_deep && index >= 0 && index <= r.max_index; i += 1) {
-        // if i > 19 {
-        //     res.hit = true;
-        //     res.color = vec4(1.0, 0.0, 0.0, 1.0);
-        //     return res;
-        // }
         if any((rm.modk & rm.outmask) != 0) {
             rm = r.s[index];
             index += 1;
@@ -345,13 +327,6 @@ fn trace_while(ray_origin: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<
             case 2: {
                 let m = (rm.march*0 + rm.modk) * pos_to_voxel_index;
                 mip = bit_world_chunk_buffer[chunk_index + m.z + m.y + m.x];
-                // if true {
-                //     res.hit = true;
-                //     res.color = vec4(vec3<f32>(f32(any(mip > 0u)))/(1.0), 1.0);
-                //     res.color = vec4(vec3<f32>(rm.march + rm.modk)/2000.0, 1.0);
-                //     res.color = vec4(vec3<f32>(rm.march*0 + rm.modk)/0.01, 1.0);
-                //     return res;
-                // }
             }
             case 3: {
                 let bit = get_mip_bit(rm.data.x, get_mip_index(rm.modk));
@@ -359,33 +334,23 @@ fn trace_while(ray_origin: vec3<f32>, dir: vec3<f32>, step: vec3<i32>, dt: vec3<
                 if bit > 0u {
                     let m = (rm.march + rm.modk) * vec3(1, ws, ws*ws);
                     chunk_index = i32(bit_world_chunk_indices[m.z + m.y + m.x]);
-                    // if true {
-                    //     res.hit = true;
-                    //     res.color = vec4(vec3<f32>(f32(chunk_index > 0))/(1.0), 1.0);
-                    //     return res;
-                    // }
                 }
             }
             case 5: {
                 let m = (rm.march + rm.modk) * pos_to_chunk_index;
                 mip = bit_world_chunk_buffer[m.z + m.y + m.x];
-                // if true {
-                //     res.hit = true;
-                //     res.color = vec4(vec3<f32>(f32(any(mip > 0u)))/(1.0), 1.0);
-                //     return res;
-                // }
             }
             default: { }
         }
         if any(mip > 0u) {
-            if index == 6 {
-                res.hit = true;
-                res.color = vec4(vec3<f32>(rm.march + rm.modk)/(10.0 * f32(6 - index)), 1.0);
-                // res.color = vec4(1.0/vec3(rm.last_t * f32(1 << u32(index)) + ray_t)/00010.3, 1.0);
-                // res.color = vec4(o/200.0, 1.0);
-                // res.color = vec4(vec3(rm.last_t/10.0), 1.0);
-                return res;
-            }
+            // if index == 6 {
+            //     res.hit = true;
+            //     res.color = vec4(vec3<f32>(rm.march + rm.modk)/(10.0 * f32(6 - index)), 1.0);
+            //     // res.color = vec4(1.0/vec3(rm.last_t * f32(1 << u32(index)) + ray_t)/00010.3, 1.0);
+            //     // res.color = vec4(o/200.0, 1.0);
+            //     // res.color = vec4(vec3(rm.last_t/10.0), 1.0);
+            //     return res;
+            // }
             if index == 0 {
                 break;
             }
