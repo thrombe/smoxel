@@ -180,6 +180,7 @@ impl ChunkOctree {
         let mut bw = BitWorld::new();
 
         self.root.insert_to_bit_world(&mut bw, IVec3::ZERO);
+        bw.update_mip();
 
         bw
     }

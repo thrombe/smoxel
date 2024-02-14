@@ -461,6 +461,7 @@ impl WorldData {
     fn update_bit_world(&mut self, svo: &ChunkOctree, pos: Vec3) {
         svo.root
             .insert_to_bit_world(&mut self.bit_world, IVec3::ZERO);
+        self.bit_world.update_mip();
         self.bit_world_uniforms.set(BitWorldUniforms {
             chunk_side: self.bit_world.chunk_side as _,
             pos,
