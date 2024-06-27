@@ -2,7 +2,7 @@
 
 ### See some voxely voxel demos on youtube
 
-<a href="https://youtu.be/Hp-3dA_Zf_c" target="_blank">
+<a href="https://youtu.be/Hp-3dA_Zf_c" target="_blank" rel="noopener noreferrer">
   <image style="width: 40%;" src="https://i.ytimg.com/vi/Hp-3dA_Zf_c/maxresdefault.jpg"/>
 </a>
 
