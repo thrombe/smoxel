@@ -2,6 +2,10 @@
 
 ### See some voxely voxel demos on youtube
 
+<a href="https://youtu.be/Hp-3dA_Zf_c" target="_blank">
+  <image style="width: 40%;" src="https://i.ytimg.com/vi/Hp-3dA_Zf_c/maxresdefault.jpg"/>
+</a>
+
 <div style="width: 40%;">
   [![simple demo](https://i.ytimg.com/vi/Hp-3dA_Zf_c/maxresdefault.jpg)](https://youtu.be/Hp-3dA_Zf_c)
 </div>
